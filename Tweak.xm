@@ -1,4 +1,4 @@
-// HomeTA 0.3.7 Battery Indicator Test — event-driven, no timer.
+// HomeTA 0.3.8 Sidebar Battery Test — iOS 27-style placement.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 
@@ -13,11 +13,10 @@ static id HTBatteryStateObserver=nil;
 
 static const NSInteger HTBatteryContainerTag=27003701;
 static const NSInteger HTBatteryImageTag=27003702;
-static const NSInteger HTBatteryLabelTag=27003703;
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
-    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.3.7] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.3.8] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
     NSFileHandle *handle=[NSFileHandle fileHandleForWritingAtPath:path];
     if (!handle) { [data writeToFile:path atomically:YES]; return; }
     @try { [handle seekToEndOfFile]; [handle writeData:data]; }
@@ -38,14 +37,14 @@ static void HTUpdateBatteryIndicator(void) {
         else if (percent >= 0 && percent < 63) symbol=@"battery.50";
         else if (percent >= 0 && percent < 88) symbol=@"battery.75";
         UIImageView *image=(UIImageView *)[container viewWithTag:HTBatteryImageTag];
-        UILabel *label=(UILabel *)[container viewWithTag:HTBatteryLabelTag];
-        UIImageSymbolConfiguration *config=[UIImageSymbolConfiguration configurationWithPointSize:9.0 weight:UIImageSymbolWeightSemibold];
-        image.image=[[UIImage systemImageNamed:symbol withConfiguration:config] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
         BOOL charging=device.batteryState==UIDeviceBatteryStateCharging || device.batteryState==UIDeviceBatteryStateFull;
+        if (charging) symbol=@"battery.100.bolt";
+        UIImageSymbolConfiguration *config=[UIImageSymbolConfiguration configurationWithPointSize:11.0 weight:UIImageSymbolWeightSemibold];
+        UIImage *symbolImage=[UIImage systemImageNamed:symbol withConfiguration:config];
+        if (!symbolImage && charging) symbolImage=[UIImage systemImageNamed:@"battery.100" withConfiguration:config];
+        image.image=[symbolImage imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
         UIColor *color=charging ? [UIColor colorWithRed:0.20 green:1.0 blue:0.48 alpha:1.0] : UIColor.whiteColor;
         image.tintColor=color;
-        label.textColor=color;
-        label.text=percent < 0 ? @"--" : [NSString stringWithFormat:@"%ld",(long)percent];
     });
 }
 
@@ -65,30 +64,28 @@ static void HTInstallBatteryIndicator(SBIconImageView *icon) {
         ancestor=ancestor.superview;
     }
     BOOL sidebarOnLeft=CGRectGetMinX(contentFrame)>1.0;
-    CGFloat x=sidebarOnLeft ? CGRectGetMinX(contentFrame)+3.0 : CGRectGetMaxX(contentFrame)-41.0;
-    UIView *container=[[UIView alloc] initWithFrame:CGRectMake(x,4.0,38.0,14.0)];
+    CGFloat sidebarStart=sidebarOnLeft ? 0.0 : CGRectGetMaxX(contentFrame);
+    CGFloat sidebarWidth=sidebarOnLeft ? CGRectGetMinX(contentFrame) : CGRectGetWidth(window.bounds)-CGRectGetMaxX(contentFrame);
+    CGFloat scale=MIN(MAX(CGRectGetHeight(window.bounds)/240.0,0.9),1.4);
+    CGFloat batteryWidth=22.0*scale;
+    CGFloat batteryHeight=12.0*scale;
+    CGFloat x=sidebarStart+MAX(0.0,(sidebarWidth-batteryWidth)*0.5);
+    CGFloat y=CGRectGetHeight(window.bounds)*0.19;
+    UIView *container=[[UIView alloc] initWithFrame:CGRectMake(x,y,batteryWidth,batteryHeight)];
     container.tag=HTBatteryContainerTag;
     container.userInteractionEnabled=NO;
-    container.backgroundColor=[UIColor colorWithRed:0.015 green:0.040 blue:0.085 alpha:0.68];
-    container.layer.cornerRadius=7.0;
-    if (@available(iOS 13.0,*)) container.layer.cornerCurve=kCACornerCurveContinuous;
+    container.backgroundColor=UIColor.clearColor;
     container.layer.zPosition=1000.0;
 
-    UIImageView *image=[[UIImageView alloc] initWithFrame:CGRectMake(3.0,1.5,17.0,11.0)];
+    UIImageView *image=[[UIImageView alloc] initWithFrame:container.bounds];
     image.tag=HTBatteryImageTag;
     image.contentMode=UIViewContentModeScaleAspectFit;
     [container addSubview:image];
 
-    UILabel *label=[[UILabel alloc] initWithFrame:CGRectMake(20.0,0,16.0,14.0)];
-    label.tag=HTBatteryLabelTag;
-    label.font=[UIFont monospacedDigitSystemFontOfSize:8.0 weight:UIFontWeightSemibold];
-    label.textAlignment=NSTextAlignmentCenter;
-    [container addSubview:label];
-
     [window addSubview:container];
     HTBatteryContainer=container;
     HTUpdateBatteryIndicator();
-    HTLog([NSString stringWithFormat:@"INSTALLED battery frame=%@ sidebarLeft=%d",NSStringFromCGRect(container.frame),sidebarOnLeft]);
+    HTLog([NSString stringWithFormat:@"INSTALLED sidebar battery frame=%@ sidebarLeft=%d",NSStringFromCGRect(container.frame),sidebarOnLeft]);
 }
 
 static void HTStyleLabelBackdrop(DBIconLabelBackdropView *label) {
@@ -146,7 +143,7 @@ static void HTStyleIconImage(SBIconImageView *image) {
             pageAppearance.pageIndicatorTintColor=[UIColor colorWithWhite:1.0 alpha:0.28];
             pageAppearance.currentPageIndicatorTintColor=[UIColor colorWithRed:0.08 green:0.84 blue:1.0 alpha:1.0];
         }
-        HTLog(@"LOADED battery-test hooks=SBIconImageView,DBIconLabelBackdropView timer=NO");
+        HTLog(@"LOADED sidebar-battery-test hooks=SBIconImageView,DBIconLabelBackdropView timer=NO");
         %init;
     }
 }
