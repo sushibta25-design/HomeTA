@@ -1,16 +1,17 @@
-// HomeTA 0.3.5 Rounded Border Test — stable hooks plus border radius only.
+// HomeTA 0.3.6 Page Appearance Test — no page-control method hook.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 
 @interface SBIconImageView : UIImageView @end
 @interface DBIconLabelBackdropView : UIView @end
+@interface DBIconListPageControl : UIPageControl @end
 
 static BOOL HTDidLogStyle=NO;
 static BOOL HTDidLogLabel=NO;
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
-    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.3.5] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.3.6] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
     NSFileHandle *handle=[NSFileHandle fileHandleForWritingAtPath:path];
     if (!handle) { [data writeToFile:path atomically:YES]; return; }
     @try { [handle seekToEndOfFile]; [handle writeData:data]; }
@@ -62,7 +63,10 @@ static void HTStyleIconImage(SBIconImageView *image) {
 %ctor {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqual:@"com.apple.CarPlayApp"]) return;
-        HTLog(@"LOADED rounded-border-test hooks=SBIconImageView,DBIconLabelBackdropView");
+        UIPageControl *pageAppearance=[DBIconListPageControl appearance];
+        pageAppearance.pageIndicatorTintColor=[UIColor colorWithWhite:1.0 alpha:0.28];
+        pageAppearance.currentPageIndicatorTintColor=[UIColor colorWithRed:0.08 green:0.84 blue:1.0 alpha:1.0];
+        HTLog(@"LOADED page-appearance-test hooks=SBIconImageView,DBIconLabelBackdropView pageHook=NO");
         %init;
     }
 }
