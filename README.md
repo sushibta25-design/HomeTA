@@ -1,23 +1,13 @@
-# HomeTA 0.4.0 — Home theme and dock battery
+# HomeTA 0.4.1 — dock touch regression repair
 
-Implements a visual interpretation of the user's reference images, not a verified reproduction of an Apple release.
+User confirmed that 0.4.0 made the native dock unresponsive. This supersedes that build.
 
-## Changes
-- Static dark blue curved wallpaper behind the native Home icon hierarchy.
-- Removes the strong cyan icon and label outlines. Uses subtle white icon edges and compact dark translucent label backdrops.
-- Adds a lightly tinted, rounded, touch-through dock overlay. Native dock icons, status text and actions remain owned by the system.
-- Draws battery outline, actual proportional fill and charging bolt directly. Unknown readings show an outline with ? instead of hiding or claiming a full battery.
-- Battery updates use UIDevice notifications, including low-power changes.
-- The display-only window is above ordinary dashboard windows (StatusBar + 1), never key and never receives touches.
-- Allows foreground-inactive scenes, hides when backgrounded, and releases the window on scene disconnect.
-- Defers scene/window installation out of the icon layout hook, with only three bounded readiness retries. No recurring timer, remote-layer search or live blur.
-- Log rotates at 256 KiB; records Home attachment, battery readings, scene state, frame and window level.
+Removes the entire overlay UIWindow and dock glass view. A small bitmap CALayer is now attached directly to the existing source window's layer. It creates no window, view hit target, key-window change, or input-routing hook. The offscreen battery drawing helper is never inserted into a view hierarchy. Rendering is cached until size, screen scale, level, charging or low-power state changes. Layer changes disable implicit animations.
 
-## Unverified device behavior
-0.3.10 did not display the battery according to the user. No current runtime log was supplied. Low window level, foreground-active-only visibility, or other scene composition may contribute; none is a confirmed root cause.
+Retains 0.4.0's dark curved Home background, subtle icon borders and compact translucent labels. This follows the supplied reference; it is not a claim of exact Apple iOS 27 reproduction.
 
-This build still locates the sidebar from DBAnimationView's content inset and estimates the vertical battery position as 19% of source window height. The new window cannot guarantee priority over another process's scene. Test both dock sides, native app opening, Home return, reconnect, touch and other overlay tweaks. Wallpaper depends on the native icon containers allowing the inserted background to show. CT belongs to another component and is not removed by HomeTA.
+Pin location still derives from the native Home inset and a proportional vertical offset. Cross-scene visibility on the device remains unverified. Layer zPosition cannot guarantee visibility above another process's scene. No claim of device success follows from CI compilation.
 
-CI compilation is not hardware validation. Install the rootless artifact, respring to reload the tweak, reconnect CarPlay, open Home, check battery beneath signal and compare phone battery/charging state. If incomplete, send one screenshot and /var/mobile/HomeTA.log (and .1 when present).
+Install the new rootless DEB, respring (required to unload 0.4.0's retained overlay window), then reconnect CarPlay. Check all three dock app shortcuts, Home/dashboard button, page swipes, battery, native app return and reconnect. If incomplete, send a screenshot plus /var/mobile/HomeTA.log. Logs rotate at 256 KiB with one backup.
 
-RootHide requires a separately built package. Baseline 0.3.4 is retained in Git history for connection-regression comparison.
+No new recurring timer, global hook, private touch forwarding, or SpringBoard injection. RootHide needs its own build.
