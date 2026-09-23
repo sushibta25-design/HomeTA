@@ -1,10 +1,11 @@
-# HomeTA 0.3.1 Rootless Safe Test
+# HomeTA 0.3.2 Rootless Safe Test
 
-This recovery build tests one verified native CarPlay class only: `SBIconImageView`.
+This incremental build keeps the verified `SBIconImageView` hook and adds the verified native `DBIconLabelBackdropView` hook.
 
 - Adds a cyan border to native Home icon images.
 - Does not insert or remove views.
-- Does not hook folder, widget, label or page-control classes.
+- Adds a dark glass color and cyan edge to native Home labels without inserting views.
+- Does not hook folder, widget or page-control classes.
 - Uses no timer, scan loop, gradient panel or overlay window.
 - Injects only into `com.apple.CarPlayApp`.
 
