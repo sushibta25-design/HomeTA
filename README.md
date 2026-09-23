@@ -1,6 +1,6 @@
-# HomeTA 0.5.2 — iOS 27-style CarPlay Home + dock battery in the dock window
+# HomeTA 0.5.3 — iOS 27-style CarPlay Home: wallpaper painted over the stock wallpaper view
 
-Target: rootless (Dopamine), iOS 15–16.x, process `com.apple.CarPlayApp`. Supersedes 0.5.1. Log showed the Home window is level -2/-1 while the dock/status bar is DBStatusBarHostWindow (level 5), so a battery layer in the Home window was always covered. The battery CALayer is now a sublayer of DBStatusBarHostWindow (no new window, hit testing off); falls back to the Home window if that class is absent.
+Target: rootless (Dopamine), iOS 15–16.x, process `com.apple.CarPlayApp`. Supersedes 0.5.1. Log showed the Home window is level -2/-1 while the dock/status bar is DBStatusBarHostWindow (level 5), so a battery layer in the Home window was always covered. The battery CALayer is now a sublayer of DBStatusBarHostWindow (no new window, hit testing off); falls back to the Home window if that class is absent. 0.5.3: the old iOS 16 wallpaper showed around the zooming app card and its rounded corners because the theme only lived inside the Home content view. The Celosia-style image is now a CALayer on top of the stock wallpaper view (found by class name containing "Wallpaper", logged as WALL host=...), so it is also what the dock blur samples. If not found, the old in-Home wallpaper stays and WALL miss lines dump the low windows. Battery digits: SF Pro Bold, smaller "100", cap-height centering.
 
 ## Dock touch
 - Every layer HomeTA adds (dock battery, Home wallpaper, icon glass rim) is marked non-hit-testable

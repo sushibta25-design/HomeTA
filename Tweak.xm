@@ -1,4 +1,4 @@
-// HomeTA 0.5.2 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.5.3 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.5.2"
+#define HT_VERSION @"0.5.3"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -45,7 +45,9 @@ static NSString *HTChain(UIView *v) {
 
 #pragma mark - Wallpaper (iOS 27 "Celosia"-inspired layered curves, light/dark)
 
-@interface HTWallpaper : UIView @end
+@interface HTWallpaper : UIView
+@property(nonatomic) NSInteger htStyle; // 0 auto, 1 light, 2 dark (offscreen rendering)
+@end
 @implementation HTWallpaper
 - (void)traitCollectionDidChange:(UITraitCollection *)previous {
     [super traitCollectionDidChange:previous];
@@ -55,7 +57,7 @@ static NSString *HTChain(UIView *v) {
     CGContextRef c=UIGraphicsGetCurrentContext();
     CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
     if (w<1 || h<1) return;
-    BOOL dark=self.traitCollection.userInterfaceStyle!=UIUserInterfaceStyleLight;
+    BOOL dark=self.htStyle ? self.htStyle==2 : self.traitCollection.userInterfaceStyle!=UIUserInterfaceStyleLight;
     // base top, base bottom, then 4 layers x (top, bottom)
     static const uint32_t darkP[]={0x060A20,0x0D1440, 0x121D55,0x0B143C, 0x1C2E7E,0x121F58, 0x2B45AA,0x1C2F7C, 0x5271D6,0x3450AE};
     static const uint32_t lightP[]={0xEAF0FF,0xD3DEFF, 0xC4D3FF,0xAFC3FA, 0xA0B8FA,0x88A3F0, 0x7D99EE,0x6684E0, 0x5D7CDF,0x4867CC};
@@ -155,13 +157,16 @@ static NSString *HTChain(UIView *v) {
         return;
     }
 
-    UIFont *font=[UIFont monospacedDigitSystemFontOfSize:h*0.72 weight:UIFontWeightBold];
-    UIFontDescriptor *rounded=[font.fontDescriptor fontDescriptorWithDesign:UIFontDescriptorSystemDesignRounded];
-    if (rounded) font=[UIFont fontWithDescriptor:rounded size:h*0.72];
+    BOOL hundred=pct>=100;
+    CGFloat fs=h*(hundred ? 0.66 : 0.74);
+    UIFont *font=hundred ? [UIFont systemFontOfSize:fs weight:UIFontWeightBold]
+                         : [UIFont monospacedDigitSystemFontOfSize:fs weight:UIFontWeightBold];
     NSString *text=known ? [NSString stringWithFormat:@"%ld",(long)pct] : @"–";
     NSDictionary *measure=@{NSFontAttributeName:font};
     CGSize ts=[text sizeWithAttributes:measure];
-    CGPoint at=CGPointMake((bodyW-ts.width)/2,(h-ts.height)/2);
+    // Center on cap height, not line height, so digits sit optically in the middle.
+    CGFloat baseline=(h+font.capHeight)/2;
+    CGPoint at=CGPointMake((bodyW-ts.width)/2,baseline-font.ascender);
 
     if (fillColor) {
         // Colored states: solid fill, plain text (no cutout).
@@ -280,11 +285,102 @@ static void HTReleaseBatteryLayer(void) {
     HTBatteryLayer=nil; HTBattery=nil; HTBatteryScene=nil;
     HTRenderedSize=CGSizeZero; HTRenderedScale=0;
 }
+
+#pragma mark - Stock wallpaper replacement
+// The old iOS 16 wallpaper peeks out around the app card while it zooms and at its rounded corners,
+// because HomeTA only painted inside the Home content view. Paint on top of the stock wallpaper view itself.
+static CALayer *HTWallLayer;
+static __weak UIView *HTWallHost;
+static HTWallpaper *HTWallPainter;
+static CGSize HTWallSize;
+static CGFloat HTWallScale;
+static NSInteger HTWallStyle;
+static BOOL HTWallMissLogged=NO;
+
+static UIView *HTFindByClass(UIView *root, NSUInteger depth) {
+    NSString *n=NSStringFromClass(root.class);
+    if ([n hasPrefix:@"HT"]) return nil;
+    if ([n rangeOfString:@"Wallpaper"].location!=NSNotFound && ![root isKindOfClass:UIWindow.class]) return root;
+    if (depth==0) return nil;
+    for (UIView *sub in root.subviews) { UIView *f=HTFindByClass(sub,depth-1); if (f) return f; }
+    return nil;
+}
+static NSString *HTTree(UIView *v, NSUInteger depth) {
+    NSMutableString *out=[NSMutableString stringWithString:NSStringFromClass(v.class)];
+    if (depth && v.subviews.count) {
+        [out appendString:@"{"];
+        NSUInteger i=0;
+        for (UIView *sub in v.subviews) { if (i++) [out appendString:@","]; if (i>6) { [out appendString:@"…"]; break; } [out appendString:HTTree(sub,depth-1)]; }
+        [out appendString:@"}"];
+    }
+    return out;
+}
+static UIView *HTFindStockWallpaper(UIWindowScene *scene) {
+    NSArray *ws=[scene.windows sortedArrayUsingComparator:^NSComparisonResult(UIWindow *a, UIWindow *b){
+        return a.windowLevel<b.windowLevel ? NSOrderedAscending : (a.windowLevel>b.windowLevel ? NSOrderedDescending : NSOrderedSame);
+    }];
+    for (UIWindow *w in ws) {
+        if (w.hidden) continue;
+        UIView *v=HTFindByClass(w,7);
+        if (v) return v;
+    }
+    if (!HTWallMissLogged) {
+        HTWallMissLogged=YES;
+        for (UIWindow *w in ws) if (w.windowLevel<=1)
+            HTLog([NSString stringWithFormat:@"WALL miss level=%.0f tree=%@",w.windowLevel,HTTree(w,4)]);
+    }
+    return nil;
+}
+static void HTUpdateStockWallpaper(UIWindowScene *scene) {
+    UIView *host=HTWallHost;
+    if (!host || !host.window || host.window.windowScene!=scene) {
+        host=HTFindStockWallpaper(scene);
+        HTWallHost=host;
+        if (host) HTLog([NSString stringWithFormat:@"WALL host=%@ bounds=%@ windowLevel=%.0f",HTChain(host),NSStringFromCGRect(host.bounds),host.window.windowLevel]);
+    }
+    HTWallpaper *homeWall=HTHome ? objc_getAssociatedObject(HTHome,&HTWallpaperKey) : nil;
+    if (!host || CGRectIsEmpty(host.bounds)) { homeWall.hidden=NO; return; }
+    BOOL created=NO;
+    if (!HTWallLayer || HTWallLayer.superlayer!=host.layer) {
+        [HTWallLayer removeFromSuperlayer];
+        HTWallLayer=[CALayer layer];
+        HTWallLayer.name=@"HomeTA.Wallpaper";
+        HTWallLayer.contentsGravity=kCAGravityResize;
+        HTWallLayer.actions=@{@"contents":NSNull.null,@"position":NSNull.null,@"bounds":NSNull.null,@"hidden":NSNull.null};
+        HTNoHit(HTWallLayer);
+        [host.layer addSublayer:HTWallLayer];
+        HTWallPainter=[HTWallpaper new];
+        HTWallSize=CGSizeZero; created=YES;
+    }
+    CGSize size=host.bounds.size;
+    CGFloat scale=MAX(1,host.window.screen.scale);
+    NSInteger style=host.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    if (host.layer.sublayers.lastObject!=HTWallLayer) { [HTWallLayer removeFromSuperlayer]; [host.layer addSublayer:HTWallLayer]; }
+    HTWallLayer.frame=host.bounds;
+    if (!CGSizeEqualToSize(size,HTWallSize) || scale!=HTWallScale || style!=HTWallStyle || !HTWallLayer.contents) {
+        HTWallPainter.htStyle=style;
+        HTWallPainter.bounds=(CGRect){CGPointZero,size};
+        UIGraphicsBeginImageContextWithOptions(size,YES,scale);
+        [HTWallPainter drawRect:HTWallPainter.bounds];
+        UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        HTWallLayer.contentsScale=scale;
+        HTWallLayer.contents=(__bridge id)image.CGImage;
+        HTWallSize=size; HTWallScale=scale; HTWallStyle=style;
+        HTLog([NSString stringWithFormat:@"WALL painted size=%@ style=%ld created=%d",NSStringFromCGSize(size),(long)style,created]);
+    }
+    [CATransaction commit];
+    // Home is transparent over the stock wallpaper, so the in-Home copy is no longer needed.
+    homeWall.hidden=YES;
+}
+
 static void HTLayoutBatteryLayer(void) {
     UIWindow *source=HTSource;
     UIView *home=HTHome;
     UIWindowScene *scene=source.windowScene;
     if (!scene) return;
+    HTUpdateStockWallpaper(scene);
     CGRect dock; BOOL onLeft=YES;
     if (!HTDockRect(source,home,&dock,&onLeft)) {
         static BOOL reported=NO;
@@ -371,6 +467,7 @@ static void HTAttachHome(UIView *icon) {
         wall.userInteractionEnabled=NO; wall.opaque=YES;
         wall.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
         wall.contentMode=UIViewContentModeRedraw;
+        wall.hidden=HTWallLayer!=nil && HTWallHost!=nil;
         HTNoHit(wall.layer);
         [home insertSubview:wall atIndex:0];
         objc_setAssociatedObject(home,&HTWallpaperKey,wall,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
