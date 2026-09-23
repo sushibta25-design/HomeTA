@@ -1,12 +1,12 @@
-# HomeTA 0.5.5 — fixed custom background
+# HomeTA 0.5.6 — reference ribbons and rounded dock
 
-Based on the 0.5.3 Tweak.xm, as requested. Removes both its wallpaper-class search and its wallpaper UIView inside DBAnimationView. Does not use the 0.5.4 lower-window fallback.
+Custom artwork redrawn from the user's two reference screenshots: broad sweeping blue/purple ribbons with luminous edges. This is not an extracted or verified official iOS 27 wallpaper. CarPlay appearance selects blue (light) or purple (dark).
 
-The custom wallpaper is now a non-hit-testable CALayer directly under the existing Home/application UIWindow, below all its native child layers. Its size comes from window bounds, with identity transform and implicit animation disabled. It is outside both the DBAnimationView and its parent, so their transformations and snapshots do not include this wallpaper. Native app and Home animations remain untouched. No additional window is created.
+Retains the 0.5.5 stationary wallpaper: a direct sublayer of the Home/application window, below native child layers and outside DBAnimationView. Rendering is cached by size, scale and appearance.
 
-Battery, icons, labels, and dock handling retain the 0.5.3 code. Rendering is cached until bounds, scale, or appearance changes. Source-window layout and appearance hooks only update the tracked CarPlay window. Wallpaper resources are released on scene disconnect.
+The existing DBStatusBarHostWindow receives a matching translucent gradient behind its contents and a rounded visual mask restricted to the dock strip. The rest of the window remains visible. Existing system/third-party masks are respected, not replaced. No new window or touch view is created; native buttons and their positions remain unchanged. Decorative layers do not hit-test. Scene disconnect removes owned styling.
 
-## Validation
-Install the rootless DEB, respring, and reconnect CarPlay. Open/close Phone and Messages repeatedly; the background should stay still at every edge while the app moves. Check dock touch, Home, split-screen, light/dark mode and reconnect. Expected diagnostic: WALL FIXED sourceLevel=-1 ... outsideHome=1 contents=1. Compilation does not verify device rendering: if a native opaque surface covers this layer, send a new video and HomeTA.log.
+## Device checks
+Install rootless DEB, respring, reconnect. Check rounded dock, blue/purple theme, shortcuts/Home button and edge touches. Open/close apps repeatedly and inspect the stationary background. Check split-screen and reconnect. Look for WALL FIXED and DOCK rounded in HomeTA.log.
 
-Target: Dopamine rootless, iOS 15–16.x. The wallpaper is custom drawn, not an official Apple iOS 27 asset.
+Native dock surfaces can obscure the gradient depending on the OS/compositor. Native opaque surfaces may also cover the fixed wallpaper. Build success is not device visual verification. Send a screenshot and log if the old rectangular dock or wallpaper remains.
