@@ -1,12 +1,12 @@
-# HomeTA 0.3.3 Rootless Safe Test
+# HomeTA 0.3.4 Rootless Stable Rollback
 
-This incremental build keeps the verified native Home hooks and adds the verified `DBIconListPageControl` hook.
+This build restores the exact hook scope and layer behavior of 0.3.2, which connected to CarPlay successfully during the vehicle test.
 
-- Adds a rounded cyan border that follows native Home icon corners.
+- Adds a cyan border to native Home icon images.
 - Does not insert or remove views.
-- Adds a subtler dark glass color and cyan edge to native Home labels.
-- Colors the active native page indicator cyan and dims inactive indicators.
-- Does not hook folder or widget classes.
+- Adds a dark glass color and cyan edge to native Home labels.
+- Removes the 0.3.3 page-control hook and icon clipping changes.
+- Does not hook folder, widget or page-control classes.
 - Uses no timer, scan loop, gradient panel or overlay window.
 - Injects only into `com.apple.CarPlayApp`.
 
