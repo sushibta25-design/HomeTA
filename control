@@ -1,8 +1,8 @@
 Package: com.sushibta.hometa
 Name: HomeTA
-Version: 0.3.4
+Version: 0.3.5
 Architecture: iphoneos-arm64
-Description: Stable CarPlay Home appearance rollback based on verified 0.3.2 rootless hooks.
+Description: Safe rounded icon border test based on verified 0.3.4 rootless hooks.
 Maintainer: sushibta25-design
 Author: sushibta25-design
 Section: Tweaks
