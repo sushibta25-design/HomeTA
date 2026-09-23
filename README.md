@@ -1,28 +1,14 @@
-# HomeTA 0.5.3 — iOS 27-style CarPlay Home: wallpaper painted over the stock wallpaper view
+# HomeTA 0.5.4 — transition wallpaper fix
 
-Target: rootless (Dopamine), iOS 15–16.x, process `com.apple.CarPlayApp`. Supersedes 0.5.1. Log showed the Home window is level -2/-1 while the dock/status bar is DBStatusBarHostWindow (level 5), so a battery layer in the Home window was always covered. The battery CALayer is now a sublayer of DBStatusBarHostWindow (no new window, hit testing off); falls back to the Home window if that class is absent. 0.5.3: the old iOS 16 wallpaper showed around the zooming app card and its rounded corners because the theme only lived inside the Home content view. The Celosia-style image is now a CALayer on top of the stock wallpaper view (found by class name containing "Wallpaper", logged as WALL host=...), so it is also what the dock blur samples. If not found, the old in-Home wallpaper stays and WALL miss lines dump the low windows. Battery digits: SF Pro Bold, smaller "100", cap-height centering.
+The supplied 0.5.3 device log reports `WALL miss`: the background window is `UIWindow(-2) > UIView`, with no Wallpaper-named view. The Home wallpaper was inside DBAnimationView, so the original background could show while Home animated away.
 
-## Dock touch
-- Every layer HomeTA adds (dock battery, Home wallpaper, icon glass rim) is marked non-hit-testable
-  via private `CALayer.allowsHitTesting=NO` (guarded by respondsToSelector), so the render server
-  cannot route a touch to them.
-- Battery layer zPosition lowered from 10000 to 100.
-- Home attach now skips any icon inside a view whose class contains `Dock`/`StatusBar`, and only
-  accepts a `DBAnimationView` at least half the window width, so nothing is ever inserted into a dock container.
-- One-shot diagnostics 3 s after CarPlay connects: `PROBE dock ...` (which view UIKit hit-tests at 4 points
-  down the dock) and `WINDOW ...` (every window in the scene). A leftover 0.4.0 overlay window shows up here.
+This version retains named-wallpaper discovery and adds a conservative fallback for a full-screen plain UIView in a lower-level UIWindow in the same scene. It rejects containers with child views, transformed containers, and windows at or above the Home/application window. The wallpaper is installed synchronously when Home is attached and refreshed by Home layout/appearance changes, with cached rendering and cleanup on scene disconnect.
 
-## Look (reference: iOS 27 CarPlay coverage, Sept 2026)
-- Wallpaper: layered sweeping curves with soft shadows, inspired by the iOS 27 "Celosia" wallpaper; light/dark variants follow the CarPlay appearance.
-- Battery: iOS 27 borderless style — translucent track, no outline, solid fill; percentage punched out of the white fill;
-  green + bolt when charging, green when full, red at <=20 %, yellow in Low Power Mode.
-- Icons: continuous-corner squircle (22.5 %) with a Liquid Glass-style gradient rim instead of a flat border.
-- Labels: dark pill removed, plain label with soft shadow.
-This is an approximation drawn on iOS 16; Apple's own assets/material are not reproduced.
+Battery and dock touch behavior are unchanged. No added window or repeating timer. Decorative layers remain excluded from hit testing. If no qualified background host exists, the in-Home wallpaper remains and WALL miss is logged.
 
-## Test
-Install DEB, **respring** (mandatory, clears any 0.4.x state), reconnect CarPlay, wait 5 s.
-Check: 3 dock shortcuts, Home/dashboard button, page swipes, battery states, app return, reconnect.
-If the dock still ignores touches, send `/var/mobile/HomeTA.log` (the PROBE/WINDOW/DOCK lines) + a photo.
+Target: Dopamine rootless, iOS 15–16.x, com.apple.CarPlayApp.
 
-No new window, view hit target, recurring timer, global hook, touch forwarding or SpringBoard injection.
+## Device verification
+Install the 0.5.4 DEB, respring and reconnect CarPlay. Open/return from Phone and Messages repeatedly; inspect all four edges and rounded corners during the animation. Check dock shortcuts, Home button, app touches, light/dark appearance and reconnect. The expected log is WALL dedicated backdrop followed by WALL host and WALL painted. Actual transition rendering still needs device verification; a successful build does not verify CarPlay behavior.
+
+The visual theme is custom drawn; it does not install a newer iOS interface.

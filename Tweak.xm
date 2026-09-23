@@ -1,4 +1,4 @@
-// HomeTA 0.5.3 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.5.4 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -6,11 +6,12 @@
 
 @interface SBIconImageView : UIImageView @end
 @interface DBIconLabelBackdropView : UIView @end
+@interface DBAnimationView : UIView @end
 @interface CALayer (HTPrivate)
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.5.3"
+#define HT_VERSION @"0.5.4"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -297,6 +298,35 @@ static CGFloat HTWallScale;
 static NSInteger HTWallStyle;
 static BOOL HTWallMissLogged=NO;
 
+static void HTReleaseWallpaper(void) {
+    [HTWallLayer removeFromSuperlayer];
+    HTWallLayer=nil; HTWallHost=nil; HTWallPainter=nil;
+    HTWallSize=CGSizeZero; HTWallScale=0; HTWallStyle=0;
+    HTWallMissLogged=NO;
+}
+
+// The supplied 0.5.3 trace has UIWindow(-2) > UIView, without a
+// Wallpaper-named view. Accept only this dedicated, full-screen backdrop
+// below the application window; never paint over a remote app or the dock.
+static UIView *HTBackdropHost(UIWindow *w, UIWindow *source) {
+    if (!source || w==source || w.hidden || w.alpha<0.99 ||
+        w.windowLevel>=source.windowLevel ||
+        ![NSStringFromClass(w.class) isEqualToString:@"UIWindow"] ||
+        w.subviews.count!=1) return nil;
+    UIView *root=w.subviews.firstObject;
+    if (![NSStringFromClass(root.class) isEqualToString:@"UIView"] ||
+        root.subviews.count || root.hidden || root.alpha<0.99 ||
+        !CGAffineTransformIsIdentity(root.transform) ||
+        !CGAffineTransformIsIdentity(w.transform)) return nil;
+    CGRect extent=[root convertRect:root.bounds toView:source];
+    CGRect b=source.bounds;
+    if (fabs(CGRectGetMinX(extent)-CGRectGetMinX(b))>1 ||
+        fabs(CGRectGetMinY(extent)-CGRectGetMinY(b))>1 ||
+        fabs(extent.size.width-b.size.width)>1 ||
+        fabs(extent.size.height-b.size.height)>1) return nil;
+    return root;
+}
+
 static UIView *HTFindByClass(UIView *root, NSUInteger depth) {
     NSString *n=NSStringFromClass(root.class);
     if ([n hasPrefix:@"HT"]) return nil;
@@ -320,9 +350,16 @@ static UIView *HTFindStockWallpaper(UIWindowScene *scene) {
         return a.windowLevel<b.windowLevel ? NSOrderedAscending : (a.windowLevel>b.windowLevel ? NSOrderedDescending : NSOrderedSame);
     }];
     for (UIWindow *w in ws) {
-        if (w.hidden) continue;
+        if (w.hidden || w.windowLevel>HTSource.windowLevel) continue;
         UIView *v=HTFindByClass(w,7);
         if (v) return v;
+    }
+    for (UIWindow *w in ws) {
+        UIView *v=HTBackdropHost(w,HTSource);
+        if (v) {
+            HTLog([NSString stringWithFormat:@"WALL dedicated backdrop level=%.0f bounds=%@",w.windowLevel,NSStringFromCGRect(v.bounds)]);
+            return v;
+        }
     }
     if (!HTWallMissLogged) {
         HTWallMissLogged=YES;
@@ -333,7 +370,8 @@ static UIView *HTFindStockWallpaper(UIWindowScene *scene) {
 }
 static void HTUpdateStockWallpaper(UIWindowScene *scene) {
     UIView *host=HTWallHost;
-    if (!host || !host.window || host.window.windowScene!=scene) {
+    if (!host || !host.window || host.window.windowScene!=scene || host.window.hidden) {
+        HTReleaseWallpaper();
         host=HTFindStockWallpaper(scene);
         HTWallHost=host;
         if (host) HTLog([NSString stringWithFormat:@"WALL host=%@ bounds=%@ windowLevel=%.0f",HTChain(host),NSStringFromCGRect(host.bounds),host.window.windowLevel]);
@@ -372,7 +410,7 @@ static void HTUpdateStockWallpaper(UIWindowScene *scene) {
     }
     [CATransaction commit];
     // Home is transparent over the stock wallpaper, so the in-Home copy is no longer needed.
-    homeWall.hidden=YES;
+    homeWall.hidden=HTWallLayer.contents!=nil;
 }
 
 static void HTLayoutBatteryLayer(void) {
@@ -475,7 +513,10 @@ static void HTAttachHome(UIView *icon) {
     }
     if (!CGRectEqualToRect(wall.frame,home.bounds)) wall.frame=home.bounds;
     BOOL newSource=HTSource!=window || HTHome!=home;
+    if (HTSource && HTSource.windowScene!=window.windowScene) HTReleaseWallpaper();
     HTSource=window; HTHome=home;
+    // Install before the first transition is committed, not one run-loop later.
+    if (newSource) HTUpdateStockWallpaper(window.windowScene);
     HTScheduleLayout();
     if (newSource) {
         // Finite readiness retries, not a repeating scene scan or render loop.
@@ -527,6 +568,20 @@ static void HTApplyGlass(UIView *iconView) {
     }
 }
 
+// Refresh only the Home animation container. No global UIView/window hooks,
+// polling timer, touch interception, or changes to native transition timing.
+%hook DBAnimationView
+- (void)layoutSubviews {
+    %orig;
+    if (self==HTHome && self.window==HTSource) HTUpdateStockWallpaper(self.window.windowScene);
+}
+- (void)traitCollectionDidChange:(UITraitCollection *)previous {
+    %orig;
+    if (self==HTHome && previous.userInterfaceStyle!=self.traitCollection.userInterfaceStyle)
+        HTUpdateStockWallpaper(self.window.windowScene);
+}
+%end
+
 %hook SBIconImageView
 - (void)layoutSubviews {
     %orig;
@@ -571,10 +626,11 @@ static void HTApplyGlass(UIView *iconView) {
         }]];
         [HTObservers addObject:[center addObserverForName:UISceneDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){
             if (n.object==HTSource.windowScene || n.object==HTBatteryScene) {
-                HTReleaseBatteryLayer(); HTSource=nil; HTHome=nil; HTProbed=nil;
+                HTReleaseBatteryLayer(); HTReleaseWallpaper(); HTSource=nil; HTHome=nil; HTProbed=nil;
             }
         }]];
-        HTLog(@"LOADED iOS27-style Home + borderless battery; layers hit-test off; no overlay window; no timer");
+        HTLog(@"LOADED stationary transition wallpaper + borderless battery; layers hit-test off; no overlay window; no timer");
         %init;
     }
 }
+
