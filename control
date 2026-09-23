@@ -1,0 +1,9 @@
+Package: com.sushibta.hometa
+Name: HomeTA
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: Native iOS 27-style CarPlay Home appearance.
+Maintainer: sushibta25-design
+Author: sushibta25-design
+Section: Tweaks
+Depends: mobilesubstrate, firmware (>= 15.0)
