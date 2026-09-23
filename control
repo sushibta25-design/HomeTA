@@ -1,8 +1,8 @@
 Package: com.sushibta.hometa
 Name: HomeTA
-Version: 0.3.3
+Version: 0.3.4
 Architecture: iphoneos-arm64
-Description: Safe icon, label and page indicator CarPlay Home appearance for rootless.
+Description: Stable CarPlay Home appearance rollback based on verified 0.3.2 rootless hooks.
 Maintainer: sushibta25-design
 Author: sushibta25-design
 Section: Tweaks
