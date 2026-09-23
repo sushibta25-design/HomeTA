@@ -1,6 +1,6 @@
-# HomeTA 0.3.7 Rootless Battery Indicator Test
+# HomeTA 0.3.8 Rootless Sidebar Battery Test
 
-This build keeps the verified 0.3.6 behavior and adds a compact live iPhone battery indicator beside the CarPlay sidebar.
+This build moves the live iPhone battery icon into the native CarPlay sidebar status area to match the iOS 27 layout.
 
 - Adds a rounded cyan border to native Home icon images.
 - Does not insert or remove views.
@@ -8,8 +8,10 @@ This build keeps the verified 0.3.6 behavior and adds a compact live iPhone batt
 - Does not enable icon `masksToBounds` or clip icon content.
 - Uses no method hook for `DBIconListPageControl`; only its native appearance proxy is configured once at startup.
 - Does not hook folder, widget or page-control classes and performs no global view-tree scan.
-- Installs the battery indicator from the already verified icon hook after the CarPlay window exists.
+- Installs the battery icon from the already verified icon hook after the CarPlay window exists.
 - Uses system battery-change notifications instead of a timer or polling loop.
+- Centers the icon inside the left or right sidebar, below network status and before the dock icons.
+- Removes the 0.3.7 dark pill and percentage text; charging state uses the green bolt battery symbol.
 - Walks only the icon's short ancestor chain once to find the native `DBAnimationView` frame, then never intercepts touches.
 - Uses no timer, scan loop, gradient panel or overlay window.
 - Injects only into `com.apple.CarPlayApp`.
