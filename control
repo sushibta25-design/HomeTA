@@ -1,8 +1,8 @@
 Package: com.sushibta.hometa
 Name: HomeTA
-Version: 0.3.6
+Version: 0.3.7
 Architecture: iphoneos-arm64
-Description: Safe native page indicator appearance test based on verified 0.3.5 rootless hooks.
+Description: Event-driven CarPlay battery indicator test based on verified 0.3.6 rootless hooks.
 Maintainer: sushibta25-design
 Author: sushibta25-design
 Section: Tweaks
