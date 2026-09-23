@@ -1,4 +1,4 @@
-// HomeTA 0.2.0 — event-driven native CarPlay Home restyling.
+// HomeTA 0.2.1 — CarPlay Home hierarchy probe.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
@@ -9,6 +9,7 @@ static const void *HTGridKey=&HTGridKey;
 static const void *HTCellKey=&HTCellKey;
 static const void *HTDockKey=&HTDockKey;
 static NSString *HTLastSignature;
+static NSString *HTLastDumpSignature;
 
 static UIColor *HTGlass(CGFloat alpha) { return [UIColor colorWithRed:0.025 green:0.050 blue:0.090 alpha:alpha]; }
 static UIColor *HTAccent(void) { return [UIColor colorWithRed:0.10 green:0.84 blue:1.0 alpha:1.0]; }
@@ -21,12 +22,56 @@ static void HTLog(NSString *format, ...) {
         [NSFileManager.defaultManager removeItemAtPath:[path stringByAppendingString:@".1"] error:nil];
         [NSFileManager.defaultManager moveItemAtPath:path toPath:[path stringByAppendingString:@".1"] error:nil];
     }
-    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.2.0] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.2.1] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
     NSFileHandle *handle=[NSFileHandle fileHandleForWritingAtPath:path];
     if (!handle) { [data writeToFile:path atomically:YES]; return; }
     @try { [handle seekToEndOfFile]; [handle writeData:data]; }
     @catch (__unused NSException *exception) {}
     @finally { [handle closeFile]; }
+}
+static NSString *HTSanitize(NSString *value) {
+    if (!value.length) return @"";
+    NSString *clean=[value stringByReplacingOccurrencesOfString:@"\n" withString:@"\\n"];
+    clean=[clean stringByReplacingOccurrencesOfString:@"\r" withString:@"\\r"];
+    if (clean.length>80) clean=[[clean substringToIndex:80] stringByAppendingString:@"…"];
+    return clean;
+}
+static void HTAppendView(NSMutableString *dump, UIView *view, UIWindow *window, NSInteger depth, NSInteger *budget) {
+    if (!view || depth>22 || (*budget)--<=0) return;
+    CGRect frame=CGRectZero;
+    @try { frame=[view convertRect:view.bounds toView:window]; }
+    @catch (__unused NSException *exception) {}
+    NSString *detail=@"";
+    if ([view isKindOfClass:UILabel.class]) {
+        UILabel *label=(UILabel *)view;
+        detail=[NSString stringWithFormat:@" text=\"%@\" font=%.1f",HTSanitize(label.text),label.font.pointSize];
+    } else if ([view isKindOfClass:UIImageView.class]) {
+        UIImageView *image=(UIImageView *)view;
+        detail=[NSString stringWithFormat:@" image=%@ imageSize=%@ mode=%ld",image.image ? @"YES" : @"NO",image.image ? NSStringFromCGSize(image.image.size) : @"{0, 0}",(long)image.contentMode];
+    } else if ([view isKindOfClass:UIButton.class]) {
+        UIButton *button=(UIButton *)view;
+        detail=[NSString stringWithFormat:@" title=\"%@\"",HTSanitize([button titleForState:UIControlStateNormal])];
+    }
+    NSString *accessibility=HTSanitize(view.accessibilityLabel);
+    NSString *identifier=HTSanitize(view.accessibilityIdentifier);
+    [dump appendFormat:@"%03ld d=%02ld %@ parent=%@ frame=%@ bounds=%@ a=%.2f hidden=%d ui=%d sub=%lu acc=\"%@\" id=\"%@\"%@\n",
+     (long)(1601-*budget),(long)depth,NSStringFromClass(view.class),view.superview ? NSStringFromClass(view.superview.class) : @"nil",
+     NSStringFromCGRect(frame),NSStringFromCGRect(view.bounds),view.alpha,view.hidden,view.userInteractionEnabled,
+     (unsigned long)view.subviews.count,accessibility,identifier,detail];
+    for (UIView *child in view.subviews) HTAppendView(dump,child,window,depth+1,budget);
+}
+static void HTDumpHierarchy(UIWindow *window, NSString *signature) {
+    if (!window || [signature isEqual:HTLastDumpSignature]) return;
+    HTLastDumpSignature=[signature copy];
+    NSMutableString *dump=[NSMutableString stringWithFormat:@"HomeTA 0.2.1 VIEW TREE\nDate: %@\nBundle: %@\nScene: %@\nWindow: %@ frame=%@ level=%.1f root=%@\nSignature: %@\n\n",
+                           NSDate.date,NSBundle.mainBundle.bundleIdentifier,
+                           window.windowScene.session.persistentIdentifier ?: @"",
+                           NSStringFromClass(window.class),NSStringFromCGRect(window.frame),window.windowLevel,
+                           window.rootViewController ? NSStringFromClass(window.rootViewController.class) : @"nil",signature];
+    NSInteger budget=1600;
+    HTAppendView(dump,window,window,0,&budget);
+    [dump writeToFile:@"/var/mobile/HomeTAViewTree.log" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    HTLog(@"VIEW_TREE_WRITTEN lines=%ld path=/var/mobile/HomeTAViewTree.log",(long)(1600-budget));
 }
 static BOOL HTDashboardWindow(UIWindow *window) {
     if (!window || !window.windowScene) return NO;
@@ -165,6 +210,7 @@ static void HTScanWindow(UIWindow *window) {
         NSMutableOrderedSet<NSString *> *classes=[NSMutableOrderedSet new];
         for (UIView *icon in icons) if (classes.count<16) [classes addObject:NSStringFromClass(icon.class)];
         HTLog(@"SCAN signature=%@ iconClasses=%@",signature,classes.array);
+        HTDumpHierarchy(window,signature);
     }
 }
 static void HTScheduleScan(UIWindow *window) {
@@ -217,7 +263,8 @@ static void HTScheduleScan(UIWindow *window) {
 %ctor {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqual:@"com.apple.CarPlayApp"]) return;
-        HTLog(@"LOADED process=%@",NSBundle.mainBundle.bundleIdentifier);
+        [[NSFileManager defaultManager] removeItemAtPath:@"/var/mobile/HomeTAViewTree.log" error:nil];
+        HTLog(@"LOADED process=%@ probe=view-tree",NSBundle.mainBundle.bundleIdentifier);
         %init;
     }
 }
