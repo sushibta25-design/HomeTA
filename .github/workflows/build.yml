@@ -1,0 +1,42 @@
+name: Build HomeTA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - hometa/**
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install ldid xz make
+
+      - name: Install Theos
+        run: |
+          git clone --recursive https://github.com/theos/theos.git $HOME/theos
+          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+
+      - name: Install iOS 16.5 SDK
+        run: |
+          mkdir -p $THEOS/sdks
+          curl -L -o /tmp/iPhoneOS16.5.sdk.tar.xz https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz
+          tar -xf /tmp/iPhoneOS16.5.sdk.tar.xz -C $THEOS/sdks
+
+      - name: Build package
+        run: |
+          gmake clean package FINALPACKAGE=1
+
+      - name: Upload DEB
+        uses: actions/upload-artifact@v4
+        with:
+          name: HomeTA-0.1.0-rootless
+          path: packages/*.deb
+          if-no-files-found: error
