@@ -1,8 +1,8 @@
 Package: com.sushibta.hometa
 Name: HomeTA
-Version: 0.3.10
+Version: 0.4.0
 Architecture: iphoneos-arm64
-Description: CarPlay sidebar battery window experiment for rootless.
+Description: Reference-inspired CarPlay Home theme and dock battery for rootless.
 Maintainer: sushibta25-design
 Author: sushibta25-design
 Section: Tweaks
