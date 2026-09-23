@@ -4,7 +4,6 @@
 
 @interface SBIconImageView : UIImageView @end
 @interface DBIconLabelBackdropView : UIView @end
-@interface DBIconListPageControl : UIPageControl @end
 
 static BOOL HTDidLogStyle=NO;
 static BOOL HTDidLogLabel=NO;
@@ -63,9 +62,12 @@ static void HTStyleIconImage(SBIconImageView *image) {
 %ctor {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqual:@"com.apple.CarPlayApp"]) return;
-        UIPageControl *pageAppearance=[DBIconListPageControl appearance];
-        pageAppearance.pageIndicatorTintColor=[UIColor colorWithWhite:1.0 alpha:0.28];
-        pageAppearance.currentPageIndicatorTintColor=[UIColor colorWithRed:0.08 green:0.84 blue:1.0 alpha:1.0];
+        Class pageClass=NSClassFromString(@"DBIconListPageControl");
+        if (pageClass && [pageClass respondsToSelector:@selector(appearance)]) {
+            UIPageControl *pageAppearance=[pageClass appearance];
+            pageAppearance.pageIndicatorTintColor=[UIColor colorWithWhite:1.0 alpha:0.28];
+            pageAppearance.currentPageIndicatorTintColor=[UIColor colorWithRed:0.08 green:0.84 blue:1.0 alpha:1.0];
+        }
         HTLog(@"LOADED page-appearance-test hooks=SBIconImageView,DBIconLabelBackdropView pageHook=NO");
         %init;
     }
