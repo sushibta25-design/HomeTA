@@ -1,4 +1,4 @@
-// HomeTA 0.3.9 Sidebar Host Battery Test — above the remote sidebar layer.
+// HomeTA 0.3.10 — scene-bound, display-only battery window experiment.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 
@@ -7,7 +7,19 @@
 
 static BOOL HTDidLogStyle=NO;
 static BOOL HTDidLogLabel=NO;
+// A display-only window must never become key or consume a CarPlay touch.
+@interface HTBatteryWindow : UIWindow
+@end
+@implementation HTBatteryWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event { return nil; }
+@end
+
+static HTBatteryWindow *HTBatteryWindowInstance=nil;
+static __weak UIWindow *HTBatterySourceWindow=nil;
 static __weak UIView *HTBatteryContainer=nil;
+static id HTSceneDisconnectObserver=nil;
+static id HTSceneDeactivateObserver=nil;
+static id HTSceneActivateObserver=nil;
 static id HTBatteryLevelObserver=nil;
 static id HTBatteryStateObserver=nil;
 
@@ -16,22 +28,12 @@ static const NSInteger HTBatteryImageTag=27003702;
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
-    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.3.9] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.3.10] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
     NSFileHandle *handle=[NSFileHandle fileHandleForWritingAtPath:path];
     if (!handle) { [data writeToFile:path atomically:YES]; return; }
     @try { [handle seekToEndOfFile]; [handle writeData:data]; }
     @catch (__unused NSException *exception) {}
     @finally { [handle closeFile]; }
-}
-
-static UIView *HTFindContextLayerHost(UIView *root) {
-    if (!root) return nil;
-    if ([NSStringFromClass(root.class) isEqualToString:@"_UIContextLayerHostView"]) return root;
-    for (UIView *child in root.subviews) {
-        UIView *match=HTFindContextLayerHost(child);
-        if (match) return match;
-    }
-    return nil;
 }
 
 static void HTUpdateBatteryIndicator(void) {
@@ -41,6 +43,8 @@ static void HTUpdateBatteryIndicator(void) {
         UIDevice *device=UIDevice.currentDevice;
         CGFloat level=device.batteryLevel;
         NSInteger percent=level < 0 ? -1 : (NSInteger)(level*100.0+0.5);
+        container.hidden=percent<0;
+        if (percent<0) return;
         NSString *symbol=@"battery.100";
         if (percent >= 0 && percent < 13) symbol=@"battery.0";
         else if (percent >= 0 && percent < 38) symbol=@"battery.25";
@@ -60,46 +64,75 @@ static void HTUpdateBatteryIndicator(void) {
 
 static void HTInstallBatteryIndicator(SBIconImageView *icon) {
     UIWindow *window=icon.window;
-    if (!window) return;
-    UIView *existing=[window viewWithTag:HTBatteryContainerTag];
-    if (existing) { HTBatteryContainer=existing; return; }
+    if (!window || !window.windowScene || window.hidden) return;
 
-    CGRect contentFrame=window.bounds;
+    // Derive the sidebar from the Home content inset. Do not guess a side
+    // when the native layout has not yet produced a usable inset.
     UIView *ancestor=icon;
-    while (ancestor) {
-        if ([NSStringFromClass(ancestor.class) isEqualToString:@"DBAnimationView"]) {
-            contentFrame=[ancestor convertRect:ancestor.bounds toView:window];
-            break;
-        }
+    while (ancestor && ![NSStringFromClass(ancestor.class) isEqualToString:@"DBAnimationView"])
         ancestor=ancestor.superview;
+    if (!ancestor) return;
+    CGRect bounds=window.bounds;
+    CGRect contentFrame=[ancestor convertRect:ancestor.bounds toView:window];
+    CGFloat left=CGRectGetMinX(contentFrame)-CGRectGetMinX(bounds);
+    CGFloat right=CGRectGetMaxX(bounds)-CGRectGetMaxX(contentFrame);
+    BOOL sidebarOnLeft=left>=right;
+    CGFloat sidebarWidth=MAX(left,right);
+    if (sidebarWidth<24.0 || sidebarWidth>CGRectGetWidth(bounds)*0.3) {
+        static BOOL loggedInvalidInset=NO;
+        if (!loggedInvalidInset) {
+            loggedInvalidInset=YES;
+            HTLog([NSString stringWithFormat:@"WAIT sidebar inset window=%@ content=%@",NSStringFromCGRect(bounds),NSStringFromCGRect(contentFrame)]);
+        }
+        return;
     }
-    BOOL sidebarOnLeft=CGRectGetMinX(contentFrame)>1.0;
-    CGFloat sidebarStart=sidebarOnLeft ? 0.0 : CGRectGetMaxX(contentFrame);
-    CGFloat sidebarWidth=sidebarOnLeft ? CGRectGetMinX(contentFrame) : CGRectGetWidth(window.bounds)-CGRectGetMaxX(contentFrame);
-    CGFloat scale=MIN(MAX(CGRectGetHeight(window.bounds)/240.0,0.9),1.4);
-    CGFloat batteryWidth=22.0*scale;
-    CGFloat batteryHeight=12.0*scale;
-    CGFloat x=sidebarStart+MAX(0.0,(sidebarWidth-batteryWidth)*0.5);
-    CGFloat y=CGRectGetHeight(window.bounds)*0.19;
-    CGRect batteryFrame=CGRectMake(x,y,batteryWidth,batteryHeight);
-    UIView *host=HTFindContextLayerHost(window);
-    UIView *target=host ?: window;
-    UIView *container=[[UIView alloc] initWithFrame:[window convertRect:batteryFrame toView:target]];
-    container.tag=HTBatteryContainerTag;
-    container.userInteractionEnabled=NO;
-    container.backgroundColor=UIColor.clearColor;
-    container.layer.zPosition=1000.0;
+    BOOL created=NO;
 
-    UIImageView *image=[[UIImageView alloc] initWithFrame:container.bounds];
-    image.tag=HTBatteryImageTag;
-    image.contentMode=UIViewContentModeScaleAspectFit;
-    [container addSubview:image];
+    if (HTBatterySourceWindow!=window || !HTBatteryWindowInstance) {
+        HTBatteryWindowInstance.hidden=YES;
+        HTBatteryWindowInstance=nil;
+        HTBatteryWindow *overlay=[[HTBatteryWindow alloc] initWithWindowScene:window.windowScene];
+        overlay.backgroundColor=UIColor.clearColor;
+        overlay.userInteractionEnabled=NO;
+        UIViewController *controller=[UIViewController new];
+        controller.view.backgroundColor=UIColor.clearColor;
+        controller.view.userInteractionEnabled=NO;
+        overlay.rootViewController=controller;
+        UIView *container=[[UIView alloc] initWithFrame:CGRectZero];
+        container.tag=HTBatteryContainerTag;
+        container.userInteractionEnabled=NO;
+        UIImageView *image=[[UIImageView alloc] initWithFrame:CGRectZero];
+        image.tag=HTBatteryImageTag;
+        image.contentMode=UIViewContentModeScaleAspectFit;
+        image.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+        [container addSubview:image];
+        [controller.view addSubview:container];
+        HTBatteryWindowInstance=overlay;
+        created=YES;
+        HTBatterySourceWindow=window;
+        HTBatteryContainer=container;
+        HTLog([NSString stringWithFormat:@"CREATED battery window scene=%@ sourceLevel=%.1f",
+            window.windowScene.session.persistentIdentifier,(double)window.windowLevel]);
+    }
 
-    [target addSubview:container];
-    [target bringSubviewToFront:container];
-    HTBatteryContainer=container;
-    HTUpdateBatteryIndicator();
-    HTLog([NSString stringWithFormat:@"INSTALLED sidebar battery frame=%@ sidebarLeft=%d host=%@",NSStringFromCGRect(container.frame),sidebarOnLeft,NSStringFromClass(target.class)]);
+    HTBatteryWindow *overlay=HTBatteryWindowInstance;
+    if (!CGRectEqualToRect(overlay.frame,window.frame)) overlay.frame=window.frame;
+    if (overlay.windowLevel!=window.windowLevel+1.0) overlay.windowLevel=window.windowLevel+1.0;
+    CGFloat scale=MIN(MAX(CGRectGetHeight(bounds)/240.0,0.9),1.4);
+    CGFloat width=22.0*scale, height=12.0*scale;
+    CGFloat start=sidebarOnLeft ? CGRectGetMinX(bounds) : CGRectGetMaxX(contentFrame);
+    CGRect sourceFrame=CGRectMake(start+(sidebarWidth-width)*0.5,
+        CGRectGetMinY(bounds)+CGRectGetHeight(bounds)*0.19,width,height);
+    CGRect frame=[window convertRect:sourceFrame toView:overlay.rootViewController.view];
+    if (!CGRectEqualToRect(HTBatteryContainer.frame,frame)) {
+        HTBatteryContainer.frame=frame;
+        [HTBatteryContainer viewWithTag:HTBatteryImageTag].frame=HTBatteryContainer.bounds;
+        HTLog([NSString stringWithFormat:@"POSITION battery=%@ source=%@ sidebar=%.1f left=%d",
+            NSStringFromCGRect(frame),NSStringFromCGRect(bounds),(double)sidebarWidth,sidebarOnLeft]);
+    }
+    BOOL hidden=window.windowScene.activationState!=UISceneActivationStateForegroundActive;
+    if (overlay.hidden!=hidden) overlay.hidden=hidden;
+    if (created) HTUpdateBatteryIndicator();
 }
 
 static void HTStyleLabelBackdrop(DBIconLabelBackdropView *label) {
@@ -157,7 +190,23 @@ static void HTStyleIconImage(SBIconImageView *image) {
             pageAppearance.pageIndicatorTintColor=[UIColor colorWithWhite:1.0 alpha:0.28];
             pageAppearance.currentPageIndicatorTintColor=[UIColor colorWithRed:0.08 green:0.84 blue:1.0 alpha:1.0];
         }
-        HTLog(@"LOADED sidebar-host-battery-test hooks=SBIconImageView,DBIconLabelBackdropView timer=NO");
+        HTSceneDisconnectObserver=[center addObserverForName:UISceneDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+            if (note.object!=HTBatteryWindowInstance.windowScene) return;
+            HTBatteryWindowInstance.hidden=YES;
+            HTBatteryWindowInstance=nil;
+            HTBatterySourceWindow=nil;
+            HTBatteryContainer=nil;
+        }];
+        HTSceneDeactivateObserver=[center addObserverForName:UISceneWillDeactivateNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+            if (note.object==HTBatteryWindowInstance.windowScene) HTBatteryWindowInstance.hidden=YES;
+        }];
+        HTSceneActivateObserver=[center addObserverForName:UISceneDidActivateNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+            if (note.object==HTBatteryWindowInstance.windowScene && HTBatterySourceWindow && !HTBatterySourceWindow.hidden) {
+                HTBatteryWindowInstance.hidden=NO;
+                HTUpdateBatteryIndicator();
+            }
+        }];
+        HTLog(@"LOADED scene battery window test; touch passthrough; timer=NO");
         %init;
     }
 }
