@@ -10,3 +10,5 @@ HomeTA restyles the native CarPlay Home hierarchy instead of placing another win
 - Injects only into `com.apple.CarPlayApp`.
 
 The first device build is intentionally conservative. Runtime matches are written once per controller class to `/var/mobile/HomeTA.log`.
+
+HomeTA can be installed beside MultiTA. It does not replace or conflict with MultiTA's package or runtime hooks.
