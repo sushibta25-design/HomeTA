@@ -1,11 +1,12 @@
-# HomeTA 0.3.4 Rootless Stable Rollback
+# HomeTA 0.3.5 Rootless Rounded Border Test
 
-This build restores the exact hook scope and layer behavior of 0.3.2, which connected to CarPlay successfully during the vehicle test.
+This build keeps the exact verified 0.3.4 hook scope and changes only the native icon layer border radius.
 
-- Adds a cyan border to native Home icon images.
+- Adds a rounded cyan border to native Home icon images.
 - Does not insert or remove views.
 - Adds a dark glass color and cyan edge to native Home labels.
-- Removes the 0.3.3 page-control hook and icon clipping changes.
+- Does not enable icon `masksToBounds` or clip icon content.
+- Does not include the 0.3.3 page-control hook.
 - Does not hook folder, widget or page-control classes.
 - Uses no timer, scan loop, gradient panel or overlay window.
 - Injects only into `com.apple.CarPlayApp`.
