@@ -1,4 +1,4 @@
-// HomeTA 0.5.0 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.5.1 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.5.0"
+#define HT_VERSION @"0.5.1"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -289,7 +289,6 @@ static void HTLayoutBatteryLayer(void) {
         HTReleaseBatteryLayer();
         HTBatteryLayer=[CALayer layer];
         HTBatteryLayer.name=@"HomeTA.DockBattery";
-        HTBatteryLayer.zPosition=100;
         HTBatteryLayer.contentsGravity=kCAGravityResizeAspect;
         HTBatteryLayer.actions=@{@"contents":NSNull.null,@"position":NSNull.null,
             @"bounds":NSNull.null,@"hidden":NSNull.null};
@@ -307,14 +306,22 @@ static void HTLayoutBatteryLayer(void) {
     CGRect battery=CGRectMake(CGRectGetMinX(dock)+(dock.size.width-bw)/2,CGRectGetMinY(bounds)+bounds.size.height*0.19,bw,bh);
     battery=CGRectIntegral(battery);
     BOOL changed=!CGRectEqualToRect(HTBatteryLayer.frame,battery);
+    // Stay above every sibling layer (the native dock backdrop sits above zPosition 100 on some units).
+    CGFloat topZ=0; NSUInteger siblings=0;
+    for (CALayer *l in source.layer.sublayers) { if (l!=HTBatteryLayer) { topZ=MAX(topZ,l.zPosition); siblings++; } }
+    CGFloat wantZ=MAX(10000,topZ+1);
+    BOOL isLast=source.layer.sublayers.lastObject==HTBatteryLayer;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
+    if (!isLast) { [HTBatteryLayer removeFromSuperlayer]; [source.layer addSublayer:HTBatteryLayer]; changed=YES; }
+    if (HTBatteryLayer.zPosition!=wantZ) { HTBatteryLayer.zPosition=wantZ; changed=YES; }
     HTBatteryLayer.frame=battery;
     HTBatteryLayer.hidden=!HTSceneVisible(scene);
     [CATransaction commit];
     HTUpdateBattery();
     if (created || changed) {
-        HTLog([NSString stringWithFormat:@"DOCK LAYER battery=%@ dock=%@ left=%d active=%ld hidden=%d hitTestOff=%d",
+        HTLog([NSString stringWithFormat:@"DOCK LAYER battery=%@ dock=%@ left=%d active=%ld hidden=%d z=%.0f siblingTopZ=%.0f siblings=%lu contents=%d hitTestOff=%d",
             NSStringFromCGRect(battery),NSStringFromCGRect(dock),onLeft,(long)scene.activationState,HTBatteryLayer.hidden,
+            HTBatteryLayer.zPosition,topZ,(unsigned long)siblings,HTBatteryLayer.contents!=nil,
             [HTBatteryLayer respondsToSelector:@selector(allowsHitTesting)] ? !HTBatteryLayer.allowsHitTesting : -1]);
     }
 }
