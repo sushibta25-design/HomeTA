@@ -1,179 +1,248 @@
-// HomeTA 0.3.10 — scene-bound, display-only battery window experiment.
+// HomeTA 0.4.0 — reference-inspired Home and scene-bound dock battery.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <objc/runtime.h>
 
 @interface SBIconImageView : UIImageView @end
 @interface DBIconLabelBackdropView : UIView @end
 
-static BOOL HTDidLogStyle=NO;
-static BOOL HTDidLogLabel=NO;
-// A display-only window must never become key or consume a CarPlay touch.
-@interface HTBatteryWindow : UIWindow
-@end
-@implementation HTBatteryWindow
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event { return nil; }
-@end
-
-static HTBatteryWindow *HTBatteryWindowInstance=nil;
-static __weak UIWindow *HTBatterySourceWindow=nil;
-static __weak UIView *HTBatteryContainer=nil;
-static id HTSceneDisconnectObserver=nil;
-static id HTSceneDeactivateObserver=nil;
-static id HTSceneActivateObserver=nil;
-static id HTBatteryLevelObserver=nil;
-static id HTBatteryStateObserver=nil;
-
-static const NSInteger HTBatteryContainerTag=27003701;
-static const NSInteger HTBatteryImageTag=27003702;
-
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
-    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.3.10] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *attrs=[NSFileManager.defaultManager attributesOfItemAtPath:path error:nil];
+    if ([attrs fileSize]>256*1024) {
+        [NSFileManager.defaultManager removeItemAtPath:[path stringByAppendingString:@".1"] error:nil];
+        [NSFileManager.defaultManager moveItemAtPath:path toPath:[path stringByAppendingString:@".1"] error:nil];
+    }
+    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.4.0] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
     NSFileHandle *handle=[NSFileHandle fileHandleForWritingAtPath:path];
     if (!handle) { [data writeToFile:path atomically:YES]; return; }
     @try { [handle seekToEndOfFile]; [handle writeData:data]; }
-    @catch (__unused NSException *exception) {}
+    @catch (__unused NSException *e) {}
     @finally { [handle closeFile]; }
 }
 
-static void HTUpdateBatteryIndicator(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIView *container=HTBatteryContainer;
-        if (!container) return;
-        UIDevice *device=UIDevice.currentDevice;
-        CGFloat level=device.batteryLevel;
-        NSInteger percent=level < 0 ? -1 : (NSInteger)(level*100.0+0.5);
-        container.hidden=percent<0;
-        if (percent<0) return;
-        NSString *symbol=@"battery.100";
-        if (percent >= 0 && percent < 13) symbol=@"battery.0";
-        else if (percent >= 0 && percent < 38) symbol=@"battery.25";
-        else if (percent >= 0 && percent < 63) symbol=@"battery.50";
-        else if (percent >= 0 && percent < 88) symbol=@"battery.75";
-        UIImageView *image=(UIImageView *)[container viewWithTag:HTBatteryImageTag];
-        BOOL charging=device.batteryState==UIDeviceBatteryStateCharging || device.batteryState==UIDeviceBatteryStateFull;
-        if (charging) symbol=@"battery.100.bolt";
-        UIImageSymbolConfiguration *config=[UIImageSymbolConfiguration configurationWithPointSize:11.0 weight:UIImageSymbolWeightSemibold];
-        UIImage *symbolImage=[UIImage systemImageNamed:symbol withConfiguration:config];
-        if (!symbolImage && charging) symbolImage=[UIImage systemImageNamed:@"battery.100" withConfiguration:config];
-        image.image=[symbolImage imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-        UIColor *color=charging ? [UIColor colorWithRed:0.20 green:1.0 blue:0.48 alpha:1.0] : UIColor.whiteColor;
-        image.tintColor=color;
-    });
+@interface HTWallpaper : UIView @end
+@implementation HTWallpaper
+- (void)drawRect:(CGRect)rect {
+    CGContextRef c=UIGraphicsGetCurrentContext();
+    CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
+    CGFloat colors[]={0.025,0.075,0.13,1, 0.08,0.19,0.26,1, 0.025,0.045,0.09,1};
+    CGFloat locations[]={0,0.52,1};
+    CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
+    CGGradientRef gradient=CGGradientCreateWithColorComponents(space,colors,locations,3);
+    CGContextDrawLinearGradient(c,gradient,CGPointZero,CGPointMake(w,h),0);
+    CGGradientRelease(gradient); CGColorSpaceRelease(space);
+    for (NSUInteger i=0;i<4;i++) {
+        CGFloat offset=(CGFloat)i*0.19*w;
+        UIBezierPath *p=[UIBezierPath bezierPath];
+        [p moveToPoint:CGPointMake(-0.15*w+offset,h)];
+        [p addCurveToPoint:CGPointMake(0.72*w+offset,-0.1*h)
+             controlPoint1:CGPointMake(0.05*w+offset,0.30*h)
+             controlPoint2:CGPointMake(0.9*w+offset,0.72*h)];
+        p.lineWidth=i==1 ? 1.2 : 0.6;
+        [[UIColor colorWithRed:0.65 green:0.84 blue:0.92 alpha:i==1 ? 0.44 : 0.17] setStroke];
+        [p stroke];
+    }
 }
+@end
 
-static void HTInstallBatteryIndicator(SBIconImageView *icon) {
-    UIWindow *window=icon.window;
-    if (!window || !window.windowScene || window.hidden) return;
+@interface HTBatteryView : UIView
+@property(nonatomic) float level;
+@property(nonatomic) UIDeviceBatteryState state;
+@property(nonatomic) BOOL lowPower;
+@end
+@implementation HTBatteryView
+- (void)drawRect:(CGRect)rect {
+    CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
+    CGFloat bodyW=w-3,bodyH=h-2;
+    CGRect body=CGRectMake(0.7,1,bodyW-1.4,bodyH);
+    UIColor *color=self.lowPower ? UIColor.systemYellowColor :
+        ((self.state==UIDeviceBatteryStateCharging || self.state==UIDeviceBatteryStateFull) ?
+         UIColor.systemGreenColor : (self.level>=0 && self.level<=0.2 ? UIColor.systemRedColor : UIColor.whiteColor));
+    UIBezierPath *outline=[UIBezierPath bezierPathWithRoundedRect:body cornerRadius:2.3];
+    outline.lineWidth=1; [[color colorWithAlphaComponent:0.8] setStroke]; [outline stroke];
+    [color setFill];
+    [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(w-2,0.36*h,2,0.28*h) cornerRadius:0.8] fill];
+    if (self.level>=0) {
+        CGRect fill=CGRectInset(body,1.8,1.8);
+        fill.size.width*=MIN(1,MAX(0,self.level));
+        if (fill.size.width>0) [[UIBezierPath bezierPathWithRoundedRect:fill cornerRadius:1] fill];
+    } else {
+        NSDictionary *attrs=@{NSFontAttributeName:[UIFont boldSystemFontOfSize:8],NSForegroundColorAttributeName:color};
+        [@"?" drawAtPoint:CGPointMake(w*0.40,0) withAttributes:attrs];
+    }
+    if (self.state==UIDeviceBatteryStateCharging) {
+        UIBezierPath *bolt=[UIBezierPath bezierPath];
+        [bolt moveToPoint:CGPointMake(w*.55,0)];
+        [bolt addLineToPoint:CGPointMake(w*.34,h*.57)];
+        [bolt addLineToPoint:CGPointMake(w*.47,h*.57)];
+        [bolt addLineToPoint:CGPointMake(w*.39,h)];
+        [bolt addLineToPoint:CGPointMake(w*.65,h*.40)];
+        [bolt addLineToPoint:CGPointMake(w*.51,h*.40)];
+        [bolt closePath];
+        [[UIColor colorWithWhite:0.08 alpha:1] setFill]; [bolt fill];
+        bolt.lineWidth=0.45; [UIColor.whiteColor setStroke]; [bolt stroke];
+    }
+}
+@end
 
-    // Derive the sidebar from the Home content inset. Do not guess a side
-    // when the native layout has not yet produced a usable inset.
-    UIView *ancestor=icon;
-    while (ancestor && ![NSStringFromClass(ancestor.class) isEqualToString:@"DBAnimationView"])
-        ancestor=ancestor.superview;
-    if (!ancestor) return;
-    CGRect bounds=window.bounds;
-    CGRect contentFrame=[ancestor convertRect:ancestor.bounds toView:window];
-    CGFloat left=CGRectGetMinX(contentFrame)-CGRectGetMinX(bounds);
-    CGFloat right=CGRectGetMaxX(bounds)-CGRectGetMaxX(contentFrame);
-    BOOL sidebarOnLeft=left>=right;
-    CGFloat sidebarWidth=MAX(left,right);
-    if (sidebarWidth<24.0 || sidebarWidth>CGRectGetWidth(bounds)*0.3) {
-        static BOOL loggedInvalidInset=NO;
-        if (!loggedInvalidInset) {
-            loggedInvalidInset=YES;
-            HTLog([NSString stringWithFormat:@"WAIT sidebar inset window=%@ content=%@",NSStringFromCGRect(bounds),NSStringFromCGRect(contentFrame)]);
-        }
+@interface HTOverlayWindow : UIWindow @end
+@implementation HTOverlayWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event { return nil; }
+@end
+
+static HTOverlayWindow *HTOverlay;
+static HTBatteryView *HTBattery;
+static UIView *HTDockGlass;
+static __weak UIView *HTHome;
+static __weak UIWindow *HTSource;
+static BOOL HTScheduled=NO;
+static char HTWallpaperKey;
+static NSMutableArray *HTObservers;
+static NSInteger HTLoggedLevel=-999;
+static NSInteger HTLoggedState=-999;
+
+static BOOL HTSceneVisible(UIWindowScene *scene) {
+    return scene && (scene.activationState==UISceneActivationStateForegroundActive ||
+                     scene.activationState==UISceneActivationStateForegroundInactive);
+}
+static void HTUpdateBattery(void) {
+    if (!HTBattery) return;
+    UIDevice *device=UIDevice.currentDevice;
+    float level=device.batteryLevel;
+    UIDeviceBatteryState state=device.batteryState;
+    BOOL low=NSProcessInfo.processInfo.lowPowerModeEnabled;
+    if (HTBattery.level!=level || HTBattery.state!=state || HTBattery.lowPower!=low) {
+        HTBattery.level=level; HTBattery.state=state; HTBattery.lowPower=low;
+        [HTBattery setNeedsDisplay];
+    }
+    NSInteger percent=level<0 ? -1 : (NSInteger)(level*100+0.5);
+    if (percent!=HTLoggedLevel || state!=HTLoggedState) {
+        HTLoggedLevel=percent; HTLoggedState=state;
+        HTLog([NSString stringWithFormat:@"BATTERY percent=%ld state=%ld",(long)percent,(long)state]);
+    }
+}
+static void HTReleaseOverlay(void) {
+    HTOverlay.hidden=YES; HTOverlay=nil; HTBattery=nil; HTDockGlass=nil;
+}
+static void HTLayoutOverlay(void) {
+    UIWindow *source=HTSource;
+    UIView *home=HTHome;
+    UIWindowScene *scene=source.windowScene;
+    if (!source || !home || home.window!=source || !scene) return;
+    CGRect bounds=source.bounds;
+    CGRect content=[home convertRect:home.bounds toView:source];
+    CGFloat left=CGRectGetMinX(content)-CGRectGetMinX(bounds);
+    CGFloat right=CGRectGetMaxX(bounds)-CGRectGetMaxX(content);
+    BOOL onLeft=left>=right;
+    CGFloat width=MAX(left,right);
+    if (width<24 || width>bounds.size.width*0.3) {
+        static BOOL reported=NO;
+        if (!reported) { reported=YES; HTLog([NSString stringWithFormat:@"WAIT inset bounds=%@ home=%@",NSStringFromCGRect(bounds),NSStringFromCGRect(content)]); }
+        if (HTOverlay) HTOverlay.hidden=YES;
         return;
     }
     BOOL created=NO;
-
-    if (HTBatterySourceWindow!=window || !HTBatteryWindowInstance) {
-        HTBatteryWindowInstance.hidden=YES;
-        HTBatteryWindowInstance=nil;
-        HTBatteryWindow *overlay=[[HTBatteryWindow alloc] initWithWindowScene:window.windowScene];
-        overlay.backgroundColor=UIColor.clearColor;
-        overlay.userInteractionEnabled=NO;
-        UIViewController *controller=[UIViewController new];
-        controller.view.backgroundColor=UIColor.clearColor;
-        controller.view.userInteractionEnabled=NO;
-        overlay.rootViewController=controller;
-        UIView *container=[[UIView alloc] initWithFrame:CGRectZero];
-        container.tag=HTBatteryContainerTag;
-        container.userInteractionEnabled=NO;
-        UIImageView *image=[[UIImageView alloc] initWithFrame:CGRectZero];
-        image.tag=HTBatteryImageTag;
-        image.contentMode=UIViewContentModeScaleAspectFit;
-        image.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-        [container addSubview:image];
-        [controller.view addSubview:container];
-        HTBatteryWindowInstance=overlay;
+    if (!HTOverlay || HTOverlay.windowScene!=scene) {
+        HTReleaseOverlay();
+        HTOverlay=[[HTOverlayWindow alloc] initWithWindowScene:scene];
+        HTOverlay.backgroundColor=UIColor.clearColor;
+        HTOverlay.opaque=NO; HTOverlay.userInteractionEnabled=NO;
+        UIViewController *root=[UIViewController new];
+        root.view.backgroundColor=UIColor.clearColor; root.view.userInteractionEnabled=NO;
+        HTOverlay.rootViewController=root;
+        HTDockGlass=[UIView new]; HTDockGlass.userInteractionEnabled=NO;
+        HTDockGlass.backgroundColor=[UIColor colorWithWhite:0.02 alpha:0.16];
+        HTDockGlass.layer.cornerRadius=13;
+        HTDockGlass.layer.borderWidth=0.5;
+        HTDockGlass.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.12].CGColor;
+        [root.view addSubview:HTDockGlass];
+        HTBattery=[HTBatteryView new]; HTBattery.level=-2;
+        HTBattery.opaque=NO; HTBattery.backgroundColor=UIColor.clearColor;
+        HTBattery.userInteractionEnabled=NO;
+        [root.view addSubview:HTBattery];
         created=YES;
-        HTBatterySourceWindow=window;
-        HTBatteryContainer=container;
-        HTLog([NSString stringWithFormat:@"CREATED battery window scene=%@ sourceLevel=%.1f",
-            window.windowScene.session.persistentIdentifier,(double)window.windowLevel]);
     }
-
-    HTBatteryWindow *overlay=HTBatteryWindowInstance;
-    if (!CGRectEqualToRect(overlay.frame,window.frame)) overlay.frame=window.frame;
-    if (overlay.windowLevel!=window.windowLevel+1.0) overlay.windowLevel=window.windowLevel+1.0;
-    CGFloat scale=MIN(MAX(CGRectGetHeight(bounds)/240.0,0.9),1.4);
-    CGFloat width=22.0*scale, height=12.0*scale;
-    CGFloat start=sidebarOnLeft ? CGRectGetMinX(bounds) : CGRectGetMaxX(contentFrame);
-    CGRect sourceFrame=CGRectMake(start+(sidebarWidth-width)*0.5,
-        CGRectGetMinY(bounds)+CGRectGetHeight(bounds)*0.19,width,height);
-    CGRect frame=[window convertRect:sourceFrame toView:overlay.rootViewController.view];
-    if (!CGRectEqualToRect(HTBatteryContainer.frame,frame)) {
-        HTBatteryContainer.frame=frame;
-        [HTBatteryContainer viewWithTag:HTBatteryImageTag].frame=HTBatteryContainer.bounds;
-        HTLog([NSString stringWithFormat:@"POSITION battery=%@ source=%@ sidebar=%.1f left=%d",
-            NSStringFromCGRect(frame),NSStringFromCGRect(bounds),(double)sidebarWidth,sidebarOnLeft]);
-    }
-    BOOL hidden=window.windowScene.activationState!=UISceneActivationStateForegroundActive;
-    if (overlay.hidden!=hidden) overlay.hidden=hidden;
-    if (created) HTUpdateBatteryIndicator();
-}
-
-static void HTStyleLabelBackdrop(DBIconLabelBackdropView *label) {
-    label.backgroundColor=[UIColor colorWithRed:0.015 green:0.040 blue:0.085 alpha:0.72];
-    label.layer.borderWidth=0.75;
-    label.layer.borderColor=[UIColor colorWithRed:0.08 green:0.84 blue:1.0 alpha:0.50].CGColor;
-    label.layer.cornerRadius=8.5;
-    if (@available(iOS 13.0,*)) label.layer.cornerCurve=kCACornerCurveContinuous;
-    label.layer.masksToBounds=YES;
-    for (UIView *child in label.subviews) {
-        if ([NSStringFromClass(child.class) containsString:@"DBDashboardPlatterView"]) child.alpha=0.38;
-    }
-    if (!HTDidLogLabel) {
-        HTDidLogLabel=YES;
-        HTLog([NSString stringWithFormat:@"STYLED DBIconLabelBackdropView frame=%@",NSStringFromCGRect(label.frame)]);
+    // Above ordinary dashboard windows, below alert-level split overlays.
+    HTOverlay.windowLevel=MAX(UIWindowLevelStatusBar+1,source.windowLevel+1);
+    CGRect sceneBounds=scene.coordinateSpace.bounds;
+    if (!CGRectEqualToRect(HTOverlay.frame,sceneBounds)) HTOverlay.frame=sceneBounds;
+    HTOverlay.rootViewController.view.frame=HTOverlay.bounds;
+    CGFloat scale=MIN(MAX(bounds.size.height/240.0,0.8),1.6);
+    CGFloat start=onLeft ? CGRectGetMinX(bounds) : CGRectGetMaxX(content);
+    CGRect dock=CGRectMake(start+2,CGRectGetMinY(bounds)+3,width-4,bounds.size.height-6);
+    HTDockGlass.frame=[source convertRect:dock toView:HTOverlay.rootViewController.view];
+    CGFloat bw=MIN(22*scale,width-12),bh=11*scale;
+    CGRect battery=CGRectMake(start+(width-bw)/2,CGRectGetMinY(bounds)+bounds.size.height*0.19,bw,bh);
+    CGRect converted=[source convertRect:battery toView:HTOverlay.rootViewController.view];
+    BOOL changed=!CGRectEqualToRect(HTBattery.frame,converted);
+    HTBattery.frame=converted;
+    HTOverlay.hidden=!HTSceneVisible(scene);
+    HTUpdateBattery();
+    if (created || changed) {
+        HTLog([NSString stringWithFormat:@"DOCK battery=%@ source=%@ scene=%@ level=%.1f active=%ld hidden=%d",
+            NSStringFromCGRect(converted),NSStringFromCGRect(bounds),NSStringFromCGRect(sceneBounds),
+            (double)HTOverlay.windowLevel,(long)scene.activationState,HTOverlay.hidden]);
     }
 }
-
-static void HTStyleIconImage(SBIconImageView *image) {
-    image.layer.borderWidth=1.5;
-    image.layer.borderColor=[UIColor colorWithRed:0.08 green:0.84 blue:1.0 alpha:0.92].CGColor;
-    image.layer.cornerRadius=MIN(CGRectGetWidth(image.bounds),CGRectGetHeight(image.bounds))*0.18;
-    if (@available(iOS 13.0,*)) image.layer.cornerCurve=kCACornerCurveContinuous;
-    HTInstallBatteryIndicator(image);
-    if (!HTDidLogStyle) {
-        HTDidLogStyle=YES;
-        HTLog([NSString stringWithFormat:@"STYLED SBIconImageView frame=%@",NSStringFromCGRect(image.frame)]);
+static void HTScheduleLayout(void) {
+    if (HTScheduled) return;
+    HTScheduled=YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        HTScheduled=NO; HTLayoutOverlay();
+    });
+}
+static void HTAttachHome(UIView *icon) {
+    UIWindow *window=icon.window;
+    if (!window || [window isKindOfClass:HTOverlayWindow.class]) return;
+    UIView *home=icon;
+    while (home && ![NSStringFromClass(home.class) isEqualToString:@"DBAnimationView"]) home=home.superview;
+    if (!home) return;
+    HTWallpaper *wall=objc_getAssociatedObject(home,&HTWallpaperKey);
+    if (!wall) {
+        wall=[[HTWallpaper alloc] initWithFrame:home.bounds];
+        wall.userInteractionEnabled=NO; wall.opaque=YES;
+        wall.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+        wall.contentMode=UIViewContentModeRedraw;
+        [home insertSubview:wall atIndex:0];
+        objc_setAssociatedObject(home,&HTWallpaperKey,wall,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        HTLog([NSString stringWithFormat:@"HOME theme attached frame=%@",NSStringFromCGRect(home.bounds)]);
+    }
+    if (!CGRectEqualToRect(wall.frame,home.bounds)) wall.frame=home.bounds;
+    BOOL newSource=HTSource!=window || HTHome!=home;
+    HTSource=window; HTHome=home;
+    HTScheduleLayout();
+    if (newSource) {
+        // Finite readiness retries, not a repeating scene scan or render loop.
+        __weak UIWindow *expected=window;
+        for (NSNumber *delay in @[@0.3,@1.0,@2.0]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(delay.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+                if (expected && HTSource==expected) HTLayoutOverlay();
+            });
+        }
     }
 }
-
 %hook SBIconImageView
 - (void)layoutSubviews {
     %orig;
-    HTStyleIconImage(self);
+    self.layer.borderWidth=0.5;
+    self.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.18].CGColor;
+    self.layer.cornerRadius=MIN(self.bounds.size.width,self.bounds.size.height)*0.20;
+    self.layer.cornerCurve=kCACornerCurveContinuous;
+    HTAttachHome(self);
 }
 %end
-
 %hook DBIconLabelBackdropView
 - (void)layoutSubviews {
     %orig;
-    HTStyleLabelBackdrop(self);
+    self.backgroundColor=[UIColor colorWithWhite:0.025 alpha:0.42];
+    self.layer.borderWidth=0;
+    self.layer.cornerRadius=5;
+    self.layer.cornerCurve=kCACornerCurveContinuous;
+    self.layer.masksToBounds=YES;
+    for (UIView *child in self.subviews) {
+        if ([NSStringFromClass(child.class) containsString:@"DBDashboardPlatterView"]) child.alpha=0.20;
+    }
 }
 %end
 
@@ -181,32 +250,25 @@ static void HTStyleIconImage(SBIconImageView *image) {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqual:@"com.apple.CarPlayApp"]) return;
         UIDevice.currentDevice.batteryMonitoringEnabled=YES;
+        HTObservers=[NSMutableArray new];
         NSNotificationCenter *center=NSNotificationCenter.defaultCenter;
-        HTBatteryLevelObserver=[center addObserverForName:UIDeviceBatteryLevelDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) { HTUpdateBatteryIndicator(); }];
-        HTBatteryStateObserver=[center addObserverForName:UIDeviceBatteryStateDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note) { HTUpdateBatteryIndicator(); }];
-        Class pageClass=NSClassFromString(@"DBIconListPageControl");
-        if (pageClass && [pageClass respondsToSelector:@selector(appearance)]) {
-            UIPageControl *pageAppearance=[pageClass appearance];
-            pageAppearance.pageIndicatorTintColor=[UIColor colorWithWhite:1.0 alpha:0.28];
-            pageAppearance.currentPageIndicatorTintColor=[UIColor colorWithRed:0.08 green:0.84 blue:1.0 alpha:1.0];
+        for (NSString *name in @[UIDeviceBatteryLevelDidChangeNotification,UIDeviceBatteryStateDidChangeNotification,NSProcessInfoPowerStateDidChangeNotification]) {
+            [HTObservers addObject:[center addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *n){ HTUpdateBattery(); }]];
         }
-        HTSceneDisconnectObserver=[center addObserverForName:UISceneDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
-            if (note.object!=HTBatteryWindowInstance.windowScene) return;
-            HTBatteryWindowInstance.hidden=YES;
-            HTBatteryWindowInstance=nil;
-            HTBatterySourceWindow=nil;
-            HTBatteryContainer=nil;
-        }];
-        HTSceneDeactivateObserver=[center addObserverForName:UISceneWillDeactivateNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
-            if (note.object==HTBatteryWindowInstance.windowScene) HTBatteryWindowInstance.hidden=YES;
-        }];
-        HTSceneActivateObserver=[center addObserverForName:UISceneDidActivateNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
-            if (note.object==HTBatteryWindowInstance.windowScene && HTBatterySourceWindow && !HTBatterySourceWindow.hidden) {
-                HTBatteryWindowInstance.hidden=NO;
-                HTUpdateBatteryIndicator();
+        for (NSString *name in @[UISceneDidActivateNotification,UISceneWillEnterForegroundNotification]) {
+            [HTObservers addObject:[center addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){
+                if (n.object==HTSource.windowScene) HTScheduleLayout();
+            }]];
+        }
+        [HTObservers addObject:[center addObserverForName:UISceneDidEnterBackgroundNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){
+            if (n.object==HTOverlay.windowScene) HTOverlay.hidden=YES;
+        }]];
+        [HTObservers addObject:[center addObserverForName:UISceneDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){
+            if (n.object==HTSource.windowScene || n.object==HTOverlay.windowScene) {
+                HTReleaseOverlay(); HTSource=nil; HTHome=nil;
             }
-        }];
-        HTLog(@"LOADED scene battery window test; touch passthrough; timer=NO");
+        }]];
+        HTLog(@"LOADED reference Home + dock battery; two icon/label hooks; no recurring timer");
         %init;
     }
 }
