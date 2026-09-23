@@ -1,22 +1,18 @@
-# HomeTA 0.3.9 Rootless Sidebar Host Battery Test
+# HomeTA 0.3.10 — Rootless battery window experiment
 
-The 0.3.8 coordinates were correct, but the remote sidebar layer covered the icon. This build attaches it above the existing `_UIContextLayerHostView` instead.
+0.3.9 still did not show the sidebar battery on the user's display. The exact cause is unconfirmed.
 
-- Adds a rounded cyan border to native Home icon images.
-- Does not insert or remove views.
-- Adds a dark glass color and cyan edge to native Home labels.
-- Does not enable icon `masksToBounds` or clip icon content.
-- Uses no method hook for `DBIconListPageControl`; only its native appearance proxy is configured once at startup.
-- Does not hook folder, widget or page-control classes and performs no global view-tree scan.
-- Installs the battery icon from the already verified icon hook after the CarPlay window exists.
-- Uses system battery-change notifications instead of a timer or polling loop.
-- Centers the icon inside the left or right sidebar, below network status and before the dock icons.
-- Removes the 0.3.7 dark pill and percentage text; charging state uses the green bolt battery symbol.
-- Locates the existing full-screen context host once and adds no new window.
-- Walks only the icon's short ancestor chain once to find the native `DBAnimationView` frame, then never intercepts touches.
-- Uses no timer, scan loop, gradient panel or overlay window.
-- Injects only into `com.apple.CarPlayApp`.
+This version removes the context-host search and uses one transparent, non-key, touch-through UIWindow in the existing CarPlay UIWindowScene. Its level is one above the Home source window. The battery position is derived from the native Home content inset; unsupported insets are skipped and logged rather than guessed.
 
-The same HomeTA source can support rootless and RootHide. They should be distributed as separate `.deb` packages because their Theos schemes, bootstrap paths and package architectures differ. This build defaults to `THEOS_PACKAGE_SCHEME=rootless`.
+- Updates battery data through system notifications, with no polling timer.
+- Reuses the battery window during Home layout and updates its frame when geometry changes.
+- Hides on scene deactivation and releases the window on disconnection.
+- Hides an unknown battery reading instead of displaying a false full battery.
+- Keeps the existing icon, label and page appearance styling.
+- Injects only into com.apple.CarPlayApp; defaults to the rootless Theos scheme.
 
-Runtime confirmation is written once to `/var/mobile/HomeTA.log`.
+The vertical position is still proportional to screen height, not anchored to the native network-status view. Visibility in other apps, sidebar alignment, reconnection and touch passthrough require device testing. A successful build does not establish runtime compatibility.
+
+Diagnostics are written to /var/mobile/HomeTA.log: LOADED, CREATED, POSITION and WAIT. If the battery remains invisible, send the log after reconnecting and opening Home. Do not infer remote-layer ownership from screenshots alone.
+
+RootHide requires a separately built and tested package.
