@@ -1,4 +1,4 @@
-// HomeTA 0.3.4 Stable Rollback — exact verified 0.3.2 hook scope.
+// HomeTA 0.3.5 Rounded Border Test — stable hooks plus border radius only.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 
@@ -10,7 +10,7 @@ static BOOL HTDidLogLabel=NO;
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
-    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.3.4] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.3.5] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
     NSFileHandle *handle=[NSFileHandle fileHandleForWritingAtPath:path];
     if (!handle) { [data writeToFile:path atomically:YES]; return; }
     @try { [handle seekToEndOfFile]; [handle writeData:data]; }
@@ -37,6 +37,7 @@ static void HTStyleLabelBackdrop(DBIconLabelBackdropView *label) {
 static void HTStyleIconImage(SBIconImageView *image) {
     image.layer.borderWidth=1.5;
     image.layer.borderColor=[UIColor colorWithRed:0.08 green:0.84 blue:1.0 alpha:0.92].CGColor;
+    image.layer.cornerRadius=MIN(CGRectGetWidth(image.bounds),CGRectGetHeight(image.bounds))*0.18;
     if (@available(iOS 13.0,*)) image.layer.cornerCurve=kCACornerCurveContinuous;
     if (!HTDidLogStyle) {
         HTDidLogStyle=YES;
@@ -61,7 +62,7 @@ static void HTStyleIconImage(SBIconImageView *image) {
 %ctor {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqual:@"com.apple.CarPlayApp"]) return;
-        HTLog(@"LOADED stable hooks=SBIconImageView,DBIconLabelBackdropView");
+        HTLog(@"LOADED rounded-border-test hooks=SBIconImageView,DBIconLabelBackdropView");
         %init;
     }
 }
