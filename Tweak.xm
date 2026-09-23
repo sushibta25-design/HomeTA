@@ -1,20 +1,17 @@
-// HomeTA 0.1.0 — native CarPlay Home styling, no overlay window and no timer.
+// HomeTA 0.2.0 — event-driven native CarPlay Home restyling.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 
+static const void *HTPendingKey=&HTPendingKey;
+static const void *HTStyledKey=&HTStyledKey;
 static const void *HTGridKey=&HTGridKey;
 static const void *HTCellKey=&HTCellKey;
-static const void *HTHomeKey=&HTHomeKey;
-static const NSInteger HTDockTag=270120;
-static NSMutableSet<NSString *> *HTLoggedControllers;
+static const void *HTDockKey=&HTDockKey;
+static NSString *HTLastSignature;
 
-static UIColor *HTGlass(CGFloat alpha) {
-    return [UIColor colorWithRed:0.035 green:0.055 blue:0.090 alpha:alpha];
-}
-static UIColor *HTAccent(void) {
-    return [UIColor colorWithRed:0.16 green:0.84 blue:1.0 alpha:1.0];
-}
+static UIColor *HTGlass(CGFloat alpha) { return [UIColor colorWithRed:0.025 green:0.050 blue:0.090 alpha:alpha]; }
+static UIColor *HTAccent(void) { return [UIColor colorWithRed:0.10 green:0.84 blue:1.0 alpha:1.0]; }
 static void HTLog(NSString *format, ...) {
     va_list args; va_start(args,format);
     NSString *message=[[NSString alloc] initWithFormat:format arguments:args]; va_end(args);
@@ -24,189 +21,188 @@ static void HTLog(NSString *format, ...) {
         [NSFileManager.defaultManager removeItemAtPath:[path stringByAppendingString:@".1"] error:nil];
         [NSFileManager.defaultManager moveItemAtPath:path toPath:[path stringByAppendingString:@".1"] error:nil];
     }
-    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.1.0] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.2.0] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
     NSFileHandle *handle=[NSFileHandle fileHandleForWritingAtPath:path];
     if (!handle) { [data writeToFile:path atomically:YES]; return; }
     @try { [handle seekToEndOfFile]; [handle writeData:data]; }
     @catch (__unused NSException *exception) {}
     @finally { [handle closeFile]; }
 }
-static BOOL HTVisible(UIView *view) {
-    return view && !view.hidden && view.alpha>0.02 && view.window && view.bounds.size.width>1 && view.bounds.size.height>1;
-}
 static BOOL HTDashboardWindow(UIWindow *window) {
-    if (!window.windowScene) return NO;
+    if (!window || !window.windowScene) return NO;
     NSString *identifier=window.windowScene.session.persistentIdentifier ?: @"";
-    return [identifier containsString:@"DBDashboard-Car"];
+    return [identifier containsString:@"DBDashboard"] || [identifier containsString:@"CarPlay"];
 }
-static void HTCollectViews(UIView *root, Class wanted, NSMutableArray<UIView *> *result, NSInteger depth, NSInteger *budget) {
-    if (!root || depth>16 || (*budget)--<=0) return;
-    if ([root isKindOfClass:wanted]) [result addObject:root];
-    for (UIView *child in root.subviews) HTCollectViews(child,wanted,result,depth+1,budget);
+static BOOL HTVisible(UIView *view) {
+    return view && view.window && !view.hidden && view.alpha>0.02 && view.bounds.size.width>2 && view.bounds.size.height>2;
 }
-static NSInteger HTImageCount(UIView *root) {
-    NSInteger budget=500;
-    NSMutableArray *images=[NSMutableArray new];
-    HTCollectViews(root,UIImageView.class,images,0,&budget);
-    NSInteger count=0;
-    for (UIImageView *image in images) if (HTVisible(image) && image.image) count++;
+static void HTCollect(UIView *root, NSMutableArray<UIView *> *views, NSInteger depth, NSInteger *budget) {
+    if (!root || depth>18 || (*budget)--<=0) return;
+    [views addObject:root];
+    for (UIView *child in root.subviews) HTCollect(child,views,depth+1,budget);
+}
+static NSInteger HTDescendantCount(UIView *root, Class wanted, NSInteger budget) {
+    if (!root || budget<=0) return 0;
+    NSInteger count=[root isKindOfClass:wanted] ? 1 : 0;
+    for (UIView *child in root.subviews) {
+        if (--budget<=0) break;
+        count+=HTDescendantCount(child,wanted,budget);
+    }
     return count;
 }
-static UICollectionView *HTFindGrid(UIView *root) {
-    NSInteger budget=900;
-    NSMutableArray<UIView *> *collections=[NSMutableArray new];
-    HTCollectViews(root,UICollectionView.class,collections,0,&budget);
-    UICollectionView *best=nil; CGFloat bestArea=0;
-    for (UICollectionView *collection in collections) {
-        if (!HTVisible(collection)) continue;
-        CGFloat area=collection.bounds.size.width*collection.bounds.size.height;
-        if (area>bestArea) { best=collection; bestArea=area; }
-    }
-    return best;
-}
-static BOOL HTNamedLikeHome(UIViewController *controller) {
-    NSString *name=NSStringFromClass(controller.class).lowercaseString;
-    if ([name containsString:@"map"] || [name containsString:@"nowplaying"] ||
-        [name containsString:@"template"] || [name containsString:@"sceneview"]) return NO;
-    return [name containsString:@"home"] || [name containsString:@"icon"] ||
-           [name containsString:@"grid"] || [name containsString:@"dashboard"];
-}
-static void HTStyleGlassView(UIView *view, CGFloat radius, UIColor *border) {
-    view.backgroundColor=HTGlass(0.34);
+static void HTStyleGlass(UIView *view, CGFloat radius, CGFloat alpha, UIColor *border) {
+    view.backgroundColor=HTGlass(alpha);
     view.layer.cornerRadius=radius;
     if (@available(iOS 13.0,*)) view.layer.cornerCurve=kCACornerCurveContinuous;
     view.layer.borderWidth=0.8;
-    view.layer.borderColor=(border ?: [UIColor colorWithWhite:1 alpha:0.18]).CGColor;
+    view.layer.borderColor=(border ?: [UIColor colorWithWhite:1 alpha:0.20]).CGColor;
 }
-static void HTStyleCell(UICollectionViewCell *cell) {
-    if (!cell || objc_getAssociatedObject(cell,HTCellKey)) return;
-    objc_setAssociatedObject(cell,HTCellKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    HTStyleGlassView(cell.contentView,22,[UIColor colorWithWhite:1 alpha:0.16]);
-    NSInteger budget=160;
-    NSMutableArray<UIView *> *labels=[NSMutableArray new];
-    HTCollectViews(cell.contentView,UILabel.class,labels,0,&budget);
-    for (UILabel *label in labels) {
-        label.textColor=UIColor.whiteColor;
-        label.font=[UIFont systemFontOfSize:label.font.pointSize weight:UIFontWeightSemibold];
-        label.backgroundColor=[UIColor colorWithWhite:0 alpha:0.38];
-        label.layer.cornerRadius=7;
-        label.clipsToBounds=YES;
+static void HTStyleContents(UIView *container) {
+    NSInteger budget=220;
+    NSMutableArray<UIView *> *views=[NSMutableArray new];
+    HTCollect(container,views,0,&budget);
+    for (UIView *view in views) {
+        if ([view isKindOfClass:UILabel.class]) {
+            UILabel *label=(UILabel *)view;
+            label.textColor=UIColor.whiteColor;
+            if (label.font.pointSize>=10) label.font=[UIFont systemFontOfSize:label.font.pointSize weight:UIFontWeightSemibold];
+            label.backgroundColor=[UIColor colorWithWhite:0 alpha:0.38];
+            label.layer.cornerRadius=7; label.clipsToBounds=YES;
+        } else if ([view isKindOfClass:UIImageView.class]) {
+            UIImageView *image=(UIImageView *)view;
+            CGFloat edge=MIN(image.bounds.size.width,image.bounds.size.height);
+            if (!image.image || edge<26) continue;
+            image.layer.cornerRadius=MIN(18,edge*0.22);
+            if (@available(iOS 13.0,*)) image.layer.cornerCurve=kCACornerCurveContinuous;
+            image.layer.borderWidth=0.65;
+            image.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.30].CGColor;
+            image.clipsToBounds=YES;
+        }
     }
-    budget=160;
-    NSMutableArray<UIView *> *images=[NSMutableArray new];
-    HTCollectViews(cell.contentView,UIImageView.class,images,0,&budget);
-    for (UIImageView *image in images) {
-        CGFloat edge=MIN(image.bounds.size.width,image.bounds.size.height);
-        if (!image.image || edge<28) continue;
-        image.layer.cornerRadius=MIN(18,edge*0.22);
-        if (@available(iOS 13.0,*)) image.layer.cornerCurve=kCACornerCurveContinuous;
-        image.layer.borderWidth=0.65;
-        image.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.28].CGColor;
-        image.clipsToBounds=YES;
-    }
+}
+static BOOL HTIsIconCandidate(UIView *view, UIWindow *window) {
+    if (!HTVisible(view) || view==window || [view isKindOfClass:UIImageView.class] || [view isKindOfClass:UILabel.class] || [view isKindOfClass:UICollectionView.class]) return NO;
+    CGRect frame=[view convertRect:view.bounds toView:window];
+    CGFloat sw=window.bounds.size.width, sh=window.bounds.size.height;
+    if (frame.size.width<48 || frame.size.height<48 || frame.size.width>sw*0.34 || frame.size.height>sh*0.48) return NO;
+    NSInteger images=HTDescendantCount(view,UIImageView.class,100);
+    NSInteger labels=HTDescendantCount(view,UILabel.class,100);
+    NSString *name=NSStringFromClass(view.class).lowercaseString;
+    BOOL named=[name containsString:@"icon"] || [name containsString:@"cell"] || [name containsString:@"application"] || [name containsString:@"button"];
+    BOOL interactive=[view isKindOfClass:UIControl.class] || view.gestureRecognizers.count>0 || view.isAccessibilityElement;
+    return images>=1 && labels>=1 && (named || interactive);
+}
+static void HTStyleIcon(UIView *view) {
+    if (objc_getAssociatedObject(view,HTStyledKey)) return;
+    objc_setAssociatedObject(view,HTStyledKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(view,HTCellKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    HTStyleGlass(view,22,0.30,[UIColor colorWithWhite:1 alpha:0.17]);
+    HTStyleContents(view);
 }
 static void HTStyleGrid(UICollectionView *grid) {
     if (!grid) return;
     objc_setAssociatedObject(grid,HTGridKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    HTStyleGlassView(grid,30,[UIColor colorWithWhite:1 alpha:0.20]);
+    HTStyleGlass(grid,30,0.20,[UIColor colorWithWhite:1 alpha:0.18]);
     grid.clipsToBounds=YES;
-    for (UICollectionViewCell *cell in grid.visibleCells) HTStyleCell(cell);
-    NSInteger budget=500;
-    NSMutableArray<UIView *> *pages=[NSMutableArray new];
-    HTCollectViews(grid.superview ?: grid,UIPageControl.class,pages,0,&budget);
-    for (UIPageControl *page in pages) {
-        page.pageIndicatorTintColor=[UIColor colorWithWhite:1 alpha:0.28];
-        page.currentPageIndicatorTintColor=HTAccent();
+    for (UICollectionViewCell *cell in grid.visibleCells) {
+        objc_setAssociatedObject(cell,HTCellKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        HTStyleGlass(cell.contentView,22,0.30,[UIColor colorWithWhite:1 alpha:0.17]);
+        HTStyleContents(cell.contentView);
     }
-}
-static UIView *HTFindDock(UIView *root, UICollectionView *grid) {
-    NSMutableArray<UIView *> *stack=[NSMutableArray arrayWithObject:root];
-    CGRect screen=root.window.bounds;
-    UIView *best=nil; CGFloat bestScore=0;
-    while (stack.count) {
-        UIView *view=stack.lastObject; [stack removeLastObject];
-        for (UIView *child in view.subviews) [stack addObject:child];
-        if (view==root || view==grid || [view isDescendantOfView:grid] || !HTVisible(view)) continue;
-        NSString *name=NSStringFromClass(view.class).lowercaseString;
-        CGRect frame=[view convertRect:view.bounds toView:root.window];
-        BOOL named=[name containsString:@"dock"];
-        BOOL shaped=frame.size.width>38 && frame.size.width<screen.size.width*0.28 &&
-                    frame.size.height>screen.size.height*0.45;
-        if (!named && !shaped) continue;
-        NSInteger icons=HTImageCount(view);
-        CGFloat score=(named ? 1000 : 0)+icons*100+frame.size.height-frame.size.width;
-        if (icons>=2 && score>bestScore) { best=view; bestScore=score; }
-    }
-    return best;
 }
 static void HTStyleDock(UIView *dock) {
-    if (!dock || [dock viewWithTag:HTDockTag]) return;
-    UIVisualEffect *effect=[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark];
-    UIVisualEffectView *glass=[[UIVisualEffectView alloc] initWithEffect:effect];
-    glass.tag=HTDockTag; glass.frame=dock.bounds;
-    glass.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-    glass.userInteractionEnabled=NO;
-    glass.layer.cornerRadius=24;
-    if (@available(iOS 13.0,*)) glass.layer.cornerCurve=kCACornerCurveContinuous;
-    glass.layer.borderWidth=0.8;
-    glass.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.22].CGColor;
-    glass.clipsToBounds=YES;
-    [dock insertSubview:glass atIndex:0];
+    if (!dock || objc_getAssociatedObject(dock,HTDockKey)) return;
+    objc_setAssociatedObject(dock,HTDockKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UIVisualEffectView *material=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark]];
+    material.frame=dock.bounds;
+    material.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+    material.userInteractionEnabled=NO;
+    material.layer.cornerRadius=24;
+    if (@available(iOS 13.0,*)) material.layer.cornerCurve=kCACornerCurveContinuous;
+    material.layer.borderWidth=0.8;
+    material.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.23].CGColor;
+    material.clipsToBounds=YES;
+    [dock insertSubview:material atIndex:0];
     dock.backgroundColor=UIColor.clearColor;
 }
-static void HTApplyToController(UIViewController *controller) {
-    if (!controller.view.window || !HTDashboardWindow(controller.view.window)) return;
-    UICollectionView *grid=HTFindGrid(controller.view);
-    if (!grid) return;
-    CGRect windowBounds=controller.view.window.bounds;
-    CGFloat area=grid.bounds.size.width*grid.bounds.size.height;
-    CGFloat screenArea=windowBounds.size.width*windowBounds.size.height;
-    BOOL structural=screenArea>0 && area>screenArea*0.28 && HTImageCount(grid)>=4;
-    if (!HTNamedLikeHome(controller) && !structural) return;
-    objc_setAssociatedObject(controller,HTHomeKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    HTStyleGrid(grid);
-    HTStyleDock(HTFindDock(controller.view,grid));
-    NSString *name=NSStringFromClass(controller.class);
-    if (![HTLoggedControllers containsObject:name]) {
-        [HTLoggedControllers addObject:name];
-        HTLog(@"HOME MATCH controller=%@ grid=%@ frame=%@ images=%ld",name,NSStringFromClass(grid.class),NSStringFromCGRect(grid.frame),(long)HTImageCount(grid));
+static void HTScanWindow(UIWindow *window) {
+    if (!HTDashboardWindow(window) || !window.rootViewController.view) return;
+    NSInteger budget=1600;
+    NSMutableArray<UIView *> *views=[NSMutableArray new];
+    HTCollect(window.rootViewController.view,views,0,&budget);
+    NSMutableArray<UIView *> *icons=[NSMutableArray new];
+    UIView *dock=nil; CGFloat dockScore=0;
+    NSInteger grids=0, pages=0;
+    CGFloat sw=window.bounds.size.width, sh=window.bounds.size.height;
+    for (UIView *view in views) {
+        if (!HTVisible(view)) continue;
+        if ([view isKindOfClass:UIPageControl.class]) {
+            UIPageControl *page=(UIPageControl *)view;
+            page.pageIndicatorTintColor=[UIColor colorWithWhite:1 alpha:0.25];
+            page.currentPageIndicatorTintColor=HTAccent(); pages++;
+        }
+        if ([view isKindOfClass:UICollectionView.class]) {
+            UICollectionView *collection=(UICollectionView *)view;
+            CGRect frame=[collection convertRect:collection.bounds toView:window];
+            if (frame.size.width*frame.size.height>sw*sh*0.18 && HTDescendantCount(collection,UIImageView.class,500)>=3) { HTStyleGrid(collection); grids++; }
+        }
+        if (HTIsIconCandidate(view,window)) [icons addObject:view];
+        NSString *name=NSStringFromClass(view.class).lowercaseString;
+        CGRect frame=[view convertRect:view.bounds toView:window];
+        BOOL named=[name containsString:@"dock"];
+        BOOL shaped=frame.size.width>38 && frame.size.width<sw*0.28 && frame.size.height>sh*0.45;
+        if (named || shaped) {
+            NSInteger images=HTDescendantCount(view,UIImageView.class,350);
+            CGFloat score=(named ? 1000 : 0)+images*100+frame.size.height-frame.size.width;
+            if (images>=2 && score>dockScore) { dock=view; dockScore=score; }
+        }
+    }
+    for (UIView *icon in icons) HTStyleIcon(icon);
+    HTStyleDock(dock);
+    NSString *signature=[NSString stringWithFormat:@"%@/%lu/%lu/%ld/%ld/%@",NSStringFromCGSize(window.bounds.size),(unsigned long)views.count,(unsigned long)icons.count,(long)grids,(long)pages,dock ? NSStringFromClass(dock.class) : @"none"];
+    if (![signature isEqual:HTLastSignature]) {
+        HTLastSignature=signature;
+        NSMutableOrderedSet<NSString *> *classes=[NSMutableOrderedSet new];
+        for (UIView *icon in icons) if (classes.count<16) [classes addObject:NSStringFromClass(icon.class)];
+        HTLog(@"SCAN signature=%@ iconClasses=%@",signature,classes.array);
     }
 }
+static void HTScheduleScan(UIWindow *window) {
+    if (!HTDashboardWindow(window) || objc_getAssociatedObject(window,HTPendingKey)) return;
+    objc_setAssociatedObject(window,HTPendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIWindow *weakWindow=window;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,120*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
+        UIWindow *strongWindow=weakWindow;
+        if (!strongWindow) return;
+        objc_setAssociatedObject(strongWindow,HTPendingKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        HTScanWindow(strongWindow);
+    });
+}
+
+%hook UIView
+- (void)didMoveToWindow { %orig; if (self.window) HTScheduleScan(self.window); }
+- (void)didAddSubview:(UIView *)subview { %orig; if (self.window) HTScheduleScan(self.window); }
+%end
 
 %hook UIViewController
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    dispatch_async(dispatch_get_main_queue(),^{ HTApplyToController(self); });
-}
-- (void)viewDidLayoutSubviews {
-    %orig;
-    if (objc_getAssociatedObject(self,HTHomeKey)) HTApplyToController(self);
-}
+- (void)viewDidAppear:(BOOL)animated { %orig; HTScheduleScan(self.view.window); }
 %end
 
 %hook UICollectionView
-- (void)layoutSubviews {
-    %orig;
-    if (objc_getAssociatedObject(self,HTGridKey)) HTStyleGrid(self);
-}
+- (void)layoutSubviews { %orig; if (objc_getAssociatedObject(self,HTGridKey)) HTStyleGrid(self); }
 %end
 
 %hook UICollectionViewCell
 - (void)setHighlighted:(BOOL)highlighted {
     %orig;
     if (!objc_getAssociatedObject(self,HTCellKey)) return;
-    [UIView animateWithDuration:highlighted ? 0.08 : 0.20 delay:0
-        usingSpringWithDamping:0.78 initialSpringVelocity:0
-        options:UIViewAnimationOptionBeginFromCurrentState|UIViewAnimationOptionAllowUserInteraction
-        animations:^{ self.transform=highlighted ? CGAffineTransformMakeScale(0.92,0.92) : CGAffineTransformIdentity; }
-        completion:nil];
+    [UIView animateWithDuration:highlighted ? 0.08 : 0.20 delay:0 usingSpringWithDamping:0.78 initialSpringVelocity:0 options:UIViewAnimationOptionBeginFromCurrentState|UIViewAnimationOptionAllowUserInteraction animations:^{ self.transform=highlighted ? CGAffineTransformMakeScale(0.92,0.92) : CGAffineTransformIdentity; } completion:nil];
 }
 %end
 
 %ctor {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqual:@"com.apple.CarPlayApp"]) return;
-        HTLoggedControllers=[NSMutableSet new];
         HTLog(@"LOADED process=%@",NSBundle.mainBundle.bundleIdentifier);
         %init;
     }
