@@ -1,6 +1,13 @@
-# HomeTA 0.2.0
+# HomeTA 0.2.1 Probe
 
-HomeTA restyles the native CarPlay Home hierarchy instead of placing another window over it. Version 0.2.0 no longer depends on finding a particular Home view controller or collection-view hierarchy.
+This diagnostic build records the real native CarPlay Home view hierarchy before the final iOS 27-style restyling hook is selected.
+
+After installing, respring and open CarPlay Home. Send both files:
+
+- `/var/mobile/HomeTA.log`
+- `/var/mobile/HomeTAViewTree.log`
+
+The snapshot is rewritten only when the hierarchy signature changes. No recurring timer or overlay window is used.
 
 - Scans native views only when they are attached or added to the CarPlay Dashboard window.
 - Detects icon containers from live geometry, labels, images and interaction instead of private class names.
