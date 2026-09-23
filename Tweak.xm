@@ -1,10 +1,16 @@
-// HomeTA 0.4.1 — reference-inspired Home and scene-bound dock battery.
+// HomeTA 0.5.0 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 
 @interface SBIconImageView : UIImageView @end
 @interface DBIconLabelBackdropView : UIView @end
+@interface CALayer (HTPrivate)
+@property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
+@end
+
+#define HT_VERSION @"0.5.0"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -13,7 +19,7 @@ static void HTLog(NSString *message) {
         [NSFileManager.defaultManager removeItemAtPath:[path stringByAppendingString:@".1"] error:nil];
         [NSFileManager.defaultManager moveItemAtPath:path toPath:[path stringByAppendingString:@".1"] error:nil];
     }
-    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.4.1] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA %@] %@\n",NSDate.date,HT_VERSION,message] dataUsingEncoding:NSUTF8StringEncoding];
     NSFileHandle *handle=[NSFileHandle fileHandleForWritingAtPath:path];
     if (!handle) { [data writeToFile:path atomically:YES]; return; }
     @try { [handle seekToEndOfFile]; [handle writeData:data]; }
@@ -21,30 +27,81 @@ static void HTLog(NSString *message) {
     @finally { [handle closeFile]; }
 }
 
+// Every layer HomeTA adds is excluded from render-server hit testing, so backboardd
+// never routes a touch to our context/layer instead of the dock.
+static void HTNoHit(CALayer *layer) {
+    if ([layer respondsToSelector:@selector(setAllowsHitTesting:)]) layer.allowsHitTesting=NO;
+}
+static UIColor *HTRGB(uint32_t hex, CGFloat a) {
+    return [UIColor colorWithRed:((hex>>16)&0xFF)/255.0 green:((hex>>8)&0xFF)/255.0 blue:(hex&0xFF)/255.0 alpha:a];
+}
+static NSString *HTChain(UIView *v) {
+    NSMutableArray *parts=[NSMutableArray new];
+    for (UIView *x=v; x && parts.count<10; x=x.superview)
+        [parts addObject:[NSString stringWithFormat:@"%@%@%@",NSStringFromClass(x.class),
+            x.userInteractionEnabled?@"":@"(noUI)",x.hidden?@"(hidden)":@""]];
+    return parts.count ? [parts componentsJoinedByString:@" < "] : @"nil";
+}
+
+#pragma mark - Wallpaper (iOS 27 "Celosia"-inspired layered curves, light/dark)
+
 @interface HTWallpaper : UIView @end
 @implementation HTWallpaper
+- (void)traitCollectionDidChange:(UITraitCollection *)previous {
+    [super traitCollectionDidChange:previous];
+    if (previous.userInterfaceStyle!=self.traitCollection.userInterfaceStyle) [self setNeedsDisplay];
+}
 - (void)drawRect:(CGRect)rect {
     CGContextRef c=UIGraphicsGetCurrentContext();
     CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
-    CGFloat colors[]={0.025,0.075,0.13,1, 0.08,0.19,0.26,1, 0.025,0.045,0.09,1};
-    CGFloat locations[]={0,0.52,1};
+    if (w<1 || h<1) return;
+    BOOL dark=self.traitCollection.userInterfaceStyle!=UIUserInterfaceStyleLight;
+    // base top, base bottom, then 4 layers x (top, bottom)
+    static const uint32_t darkP[]={0x060A20,0x0D1440, 0x121D55,0x0B143C, 0x1C2E7E,0x121F58, 0x2B45AA,0x1C2F7C, 0x5271D6,0x3450AE};
+    static const uint32_t lightP[]={0xEAF0FF,0xD3DEFF, 0xC4D3FF,0xAFC3FA, 0xA0B8FA,0x88A3F0, 0x7D99EE,0x6684E0, 0x5D7CDF,0x4867CC};
+    const uint32_t *p=dark ? darkP : lightP;
     CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
-    CGGradientRef gradient=CGGradientCreateWithColorComponents(space,colors,locations,3);
-    CGContextDrawLinearGradient(c,gradient,CGPointZero,CGPointMake(w,h),0);
-    CGGradientRelease(gradient); CGColorSpaceRelease(space);
+    CGFloat loc[]={0,1};
+
+    CGGradientRef base=CGGradientCreateWithColors(space,(__bridge CFArrayRef)@[(id)HTRGB(p[0],1).CGColor,(id)HTRGB(p[1],1).CGColor],loc);
+    CGContextDrawLinearGradient(c,base,CGPointMake(0,0),CGPointMake(w*0.3,h),kCGGradientDrawsBeforeStartLocation|kCGGradientDrawsAfterEndLocation);
+    CGGradientRelease(base);
+
     for (NSUInteger i=0;i<4;i++) {
-        CGFloat offset=(CGFloat)i*0.19*w;
-        UIBezierPath *p=[UIBezierPath bezierPath];
-        [p moveToPoint:CGPointMake(-0.15*w+offset,h)];
-        [p addCurveToPoint:CGPointMake(0.72*w+offset,-0.1*h)
-             controlPoint1:CGPointMake(0.05*w+offset,0.30*h)
-             controlPoint2:CGPointMake(0.9*w+offset,0.72*h)];
-        p.lineWidth=i==1 ? 1.2 : 0.6;
-        [[UIColor colorWithRed:0.65 green:0.84 blue:0.92 alpha:i==1 ? 0.44 : 0.17] setStroke];
-        [p stroke];
+        CGFloat x0=w*(0.06+0.19*i), x1=w*(0.46+0.15*i);
+        UIBezierPath *edge=[UIBezierPath bezierPath];
+        [edge moveToPoint:CGPointMake(x0,h+2)];
+        [edge addCurveToPoint:CGPointMake(x1,-2)
+                controlPoint1:CGPointMake(x0+w*0.32,h*0.66)
+                controlPoint2:CGPointMake(x1-w*0.30,h*0.38)];
+        UIBezierPath *region=[edge copy];
+        [region addLineToPoint:CGPointMake(w+2,-2)];
+        [region addLineToPoint:CGPointMake(w+2,h+2)];
+        [region closePath];
+
+        // Soft shadow cast back onto the previous layer ("folded paper" depth).
+        CGContextSaveGState(c);
+        CGContextSetShadowWithColor(c,CGSizeMake(-w*0.006,0),h*0.09,[UIColor colorWithWhite:0 alpha:dark?0.55:0.20].CGColor);
+        [HTRGB(p[3+2*i],1) setFill];
+        [region fill];
+        CGContextRestoreGState(c);
+
+        CGContextSaveGState(c);
+        [region addClip];
+        CGGradientRef g=CGGradientCreateWithColors(space,(__bridge CFArrayRef)@[(id)HTRGB(p[2+2*i],1).CGColor,(id)HTRGB(p[3+2*i],1).CGColor],loc);
+        CGContextDrawLinearGradient(c,g,CGPointMake(x1,0),CGPointMake(x0,h),0);
+        CGGradientRelease(g);
+        CGContextRestoreGState(c);
+
+        edge.lineWidth=1;
+        [[UIColor colorWithWhite:1 alpha:dark?0.10:0.35] setStroke];
+        [edge stroke];
     }
+    CGColorSpaceRelease(space);
 }
 @end
+
+#pragma mark - Battery (iOS 27 borderless style)
 
 @interface HTBatteryView : UIView
 @property(nonatomic) float level;
@@ -53,41 +110,80 @@ static void HTLog(NSString *message) {
 @end
 @implementation HTBatteryView
 - (void)drawRect:(CGRect)rect {
+    CGContextRef c=UIGraphicsGetCurrentContext();
     CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
-    CGFloat bodyW=w-3,bodyH=h-2;
-    CGRect body=CGRectMake(0.7,1,bodyW-1.4,bodyH);
-    UIColor *color=self.lowPower ? UIColor.systemYellowColor :
-        ((self.state==UIDeviceBatteryStateCharging || self.state==UIDeviceBatteryStateFull) ?
-         UIColor.systemGreenColor : (self.level>=0 && self.level<=0.2 ? UIColor.systemRedColor : UIColor.whiteColor));
-    UIBezierPath *outline=[UIBezierPath bezierPathWithRoundedRect:body cornerRadius:2.3];
-    outline.lineWidth=1; [[color colorWithAlphaComponent:0.8] setStroke]; [outline stroke];
-    [color setFill];
-    [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(w-2,0.36*h,2,0.28*h) cornerRadius:0.8] fill];
-    if (self.level>=0) {
-        CGRect fill=CGRectInset(body,1.8,1.8);
-        fill.size.width*=MIN(1,MAX(0,self.level));
-        if (fill.size.width>0) [[UIBezierPath bezierPathWithRoundedRect:fill cornerRadius:1] fill];
-    } else {
-        NSDictionary *attrs=@{NSFontAttributeName:[UIFont boldSystemFontOfSize:8],NSForegroundColorAttributeName:color};
-        [@"?" drawAtPoint:CGPointMake(w*0.40,0) withAttributes:attrs];
+    CGFloat nubW=MAX(1.5,h*0.13),gap=MAX(1,h*0.09);
+    CGFloat bodyW=w-nubW-gap;
+    CGRect body=CGRectMake(0,0,bodyW,h);
+    UIBezierPath *shell=[UIBezierPath bezierPathWithRoundedRect:body cornerRadius:h*0.36];
+
+    BOOL known=self.level>=0;
+    NSInteger pct=known ? lroundf(self.level*100) : -1;
+    BOOL charging=self.state==UIDeviceBatteryStateCharging;
+    BOOL full=self.state==UIDeviceBatteryStateFull;
+    BOOL critical=known && !charging && !full && pct<=20;
+    UIColor *fillColor=nil; UIColor *ink=nil;
+    if (self.lowPower)          { fillColor=UIColor.systemYellowColor; ink=[UIColor colorWithWhite:0 alpha:0.85]; }
+    else if (charging || full)  { fillColor=UIColor.systemGreenColor;  ink=[UIColor colorWithWhite:0 alpha:0.85]; }
+    else if (critical)          { fillColor=UIColor.systemRedColor;    ink=UIColor.whiteColor; }
+
+    // Borderless: translucent track + solid fill, no outline stroke.
+    [[UIColor colorWithWhite:1 alpha:0.32] setFill];
+    [shell fill];
+    [[UIColor colorWithWhite:1 alpha:0.40] setFill];
+    [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(bodyW+gap,h*0.32,nubW,h*0.36)
+                           byRoundingCorners:UIRectCornerTopRight|UIRectCornerBottomRight
+                                 cornerRadii:CGSizeMake(nubW,nubW)] fill];
+
+    CGFloat fillW=known ? bodyW*MIN(1,MAX(0.02,self.level)) : 0;
+    CGRect fillRect=CGRectMake(0,0,fillW,h);
+    if (fillW>0) {
+        CGContextSaveGState(c);
+        [shell addClip];
+        [(fillColor ?: UIColor.whiteColor) setFill];
+        UIRectFill(fillRect);
+        CGContextRestoreGState(c);
     }
-    if (self.state==UIDeviceBatteryStateCharging) {
-        UIBezierPath *bolt=[UIBezierPath bezierPath];
-        [bolt moveToPoint:CGPointMake(w*.55,0)];
-        [bolt addLineToPoint:CGPointMake(w*.34,h*.57)];
-        [bolt addLineToPoint:CGPointMake(w*.47,h*.57)];
-        [bolt addLineToPoint:CGPointMake(w*.39,h)];
-        [bolt addLineToPoint:CGPointMake(w*.65,h*.40)];
-        [bolt addLineToPoint:CGPointMake(w*.51,h*.40)];
-        [bolt closePath];
-        [[UIColor colorWithWhite:0.08 alpha:1] setFill]; [bolt fill];
-        bolt.lineWidth=0.45; [UIColor.whiteColor setStroke]; [bolt stroke];
+
+    if (charging) {
+        UIImageSymbolConfiguration *cfg=[UIImageSymbolConfiguration configurationWithPointSize:h*0.74 weight:UIImageSymbolWeightBlack];
+        UIImage *bolt=[[UIImage systemImageNamed:@"bolt.fill" withConfiguration:cfg] imageWithTintColor:ink renderingMode:UIImageRenderingModeAlwaysOriginal];
+        if (bolt) {
+            CGSize s=bolt.size;
+            [bolt drawInRect:CGRectMake((bodyW-s.width)/2,(h-s.height)/2,s.width,s.height)];
+        }
+        return;
     }
+
+    UIFont *font=[UIFont monospacedDigitSystemFontOfSize:h*0.72 weight:UIFontWeightBold];
+    UIFontDescriptor *rounded=[font.fontDescriptor fontDescriptorWithDesign:UIFontDescriptorSystemDesignRounded];
+    if (rounded) font=[UIFont fontWithDescriptor:rounded size:h*0.72];
+    NSString *text=known ? [NSString stringWithFormat:@"%ld",(long)pct] : @"–";
+    NSDictionary *measure=@{NSFontAttributeName:font};
+    CGSize ts=[text sizeWithAttributes:measure];
+    CGPoint at=CGPointMake((bodyW-ts.width)/2,(h-ts.height)/2);
+
+    if (fillColor) {
+        // Colored states: solid fill, plain text (no cutout).
+        [text drawAtPoint:at withAttributes:@{NSFontAttributeName:font,NSForegroundColorAttributeName:ink}];
+        return;
+    }
+    // Normal: digits punched through the white fill, white where they sit over the track.
+    CGContextSaveGState(c);
+    CGContextClipToRect(c,fillRect);
+    CGContextSetBlendMode(c,kCGBlendModeDestinationOut);
+    [text drawAtPoint:at withAttributes:@{NSFontAttributeName:font,NSForegroundColorAttributeName:UIColor.blackColor}];
+    CGContextRestoreGState(c);
+    CGContextSaveGState(c);
+    CGContextClipToRect(c,CGRectMake(fillW,0,bodyW-fillW,h));
+    [text drawAtPoint:at withAttributes:@{NSFontAttributeName:font,NSForegroundColorAttributeName:[UIColor colorWithWhite:1 alpha:0.95]}];
+    CGContextRestoreGState(c);
 }
 @end
 
-// The battery is a bitmap CALayer in the existing window, never a UIWindow.
-// HTBattery is an offscreen drawing helper and is not added to any view tree.
+#pragma mark - State
+
+// The battery is a bitmap CALayer in the existing window, never a UIWindow or UIView.
 static CALayer *HTBatteryLayer;
 static HTBatteryView *HTBattery;
 static __weak UIWindowScene *HTBatteryScene;
@@ -95,8 +191,11 @@ static CGSize HTRenderedSize;
 static CGFloat HTRenderedScale;
 static __weak UIView *HTHome;
 static __weak UIWindow *HTSource;
+static __weak UIWindow *HTProbed;
 static BOOL HTScheduled=NO;
+static BOOL HTDockIconLogged=NO;
 static char HTWallpaperKey;
+static char HTRimKey;
 static NSMutableArray *HTObservers;
 static NSInteger HTLoggedLevel=-999;
 static NSInteger HTLoggedState=-999;
@@ -105,6 +204,41 @@ static BOOL HTSceneVisible(UIWindowScene *scene) {
     return scene && (scene.activationState==UISceneActivationStateForegroundActive ||
                      scene.activationState==UISceneActivationStateForegroundInactive);
 }
+
+// Left/right strip beside the Home content = native dock area.
+static BOOL HTDockRect(UIWindow *source, UIView *home, CGRect *outDock, BOOL *outLeft) {
+    if (!source || !home || home.window!=source) return NO;
+    CGRect bounds=source.bounds;
+    CGRect content=[home convertRect:home.bounds toView:source];
+    CGFloat left=CGRectGetMinX(content)-CGRectGetMinX(bounds);
+    CGFloat right=CGRectGetMaxX(bounds)-CGRectGetMaxX(content);
+    BOOL onLeft=left>=right;
+    CGFloat width=MAX(left,right);
+    if (width<24 || width>bounds.size.width*0.3) return NO;
+    CGFloat x=onLeft ? CGRectGetMinX(bounds) : CGRectGetMaxX(content);
+    if (outDock) *outDock=CGRectMake(x,CGRectGetMinY(bounds),width,bounds.size.height);
+    if (outLeft) *outLeft=onLeft;
+    return YES;
+}
+
+// One-shot diagnostic: which view UIKit would deliver a dock touch to, plus every window in the scene.
+static void HTProbeDock(void) {
+    UIWindow *source=HTSource; UIView *home=HTHome;
+    if (!source || HTProbed==source) return;
+    CGRect dock;
+    if (!HTDockRect(source,home,&dock,NULL)) return;
+    HTProbed=source;
+    for (NSNumber *f in @[@0.40,@0.55,@0.70,@0.92]) {
+        CGPoint pt=CGPointMake(CGRectGetMidX(dock),CGRectGetMinY(dock)+dock.size.height*f.doubleValue);
+        UIView *hit=[source hitTest:pt withEvent:nil];
+        HTLog([NSString stringWithFormat:@"PROBE dock y=%.2f pt=%@ hit=%@",f.doubleValue,NSStringFromCGPoint(pt),HTChain(hit)]);
+    }
+    for (UIWindow *w in source.windowScene.windows) {
+        HTLog([NSString stringWithFormat:@"WINDOW %@ level=%.0f frame=%@ hidden=%d alpha=%.2f ui=%d key=%d",
+            NSStringFromClass(w.class),w.windowLevel,NSStringFromCGRect(w.frame),w.hidden,w.alpha,w.userInteractionEnabled,w.isKeyWindow]);
+    }
+}
+
 static void HTUpdateBattery(void) {
     if (!HTBattery || !HTBatteryLayer || CGRectIsEmpty(HTBatteryLayer.bounds)) return;
     UIDevice *device=UIDevice.currentDevice;
@@ -130,7 +264,7 @@ static void HTUpdateBattery(void) {
     NSInteger percent=level<0 ? -1 : (NSInteger)(level*100+0.5);
     if (percent!=HTLoggedLevel || state!=HTLoggedState) {
         HTLoggedLevel=percent; HTLoggedState=state;
-        HTLog([NSString stringWithFormat:@"BATTERY percent=%ld state=%ld",(long)percent,(long)state]);
+        HTLog([NSString stringWithFormat:@"BATTERY percent=%ld state=%ld lowPower=%d",(long)percent,(long)state,low]);
     }
 }
 static void HTReleaseBatteryLayer(void) {
@@ -142,16 +276,11 @@ static void HTLayoutBatteryLayer(void) {
     UIWindow *source=HTSource;
     UIView *home=HTHome;
     UIWindowScene *scene=source.windowScene;
-    if (!source || !home || home.window!=source || !scene) return;
-    CGRect bounds=source.bounds;
-    CGRect content=[home convertRect:home.bounds toView:source];
-    CGFloat left=CGRectGetMinX(content)-CGRectGetMinX(bounds);
-    CGFloat right=CGRectGetMaxX(bounds)-CGRectGetMaxX(content);
-    BOOL onLeft=left>=right;
-    CGFloat width=MAX(left,right);
-    if (width<24 || width>bounds.size.width*0.3) {
+    if (!scene) return;
+    CGRect dock; BOOL onLeft=YES;
+    if (!HTDockRect(source,home,&dock,&onLeft)) {
         static BOOL reported=NO;
-        if (!reported) { reported=YES; HTLog([NSString stringWithFormat:@"WAIT inset bounds=%@ home=%@",NSStringFromCGRect(bounds),NSStringFromCGRect(content)]); }
+        if (!reported && source && home) { reported=YES; HTLog([NSString stringWithFormat:@"WAIT inset bounds=%@ home=%@",NSStringFromCGRect(source.bounds),NSStringFromCGRect([home convertRect:home.bounds toView:source])]); }
         HTBatteryLayer.hidden=YES;
         return;
     }
@@ -160,19 +289,23 @@ static void HTLayoutBatteryLayer(void) {
         HTReleaseBatteryLayer();
         HTBatteryLayer=[CALayer layer];
         HTBatteryLayer.name=@"HomeTA.DockBattery";
-        HTBatteryLayer.zPosition=10000;
+        HTBatteryLayer.zPosition=100;
         HTBatteryLayer.contentsGravity=kCAGravityResizeAspect;
         HTBatteryLayer.actions=@{@"contents":NSNull.null,@"position":NSNull.null,
             @"bounds":NSNull.null,@"hidden":NSNull.null};
+        HTNoHit(HTBatteryLayer);
         [source.layer addSublayer:HTBatteryLayer];
         HTBattery=[HTBatteryView new]; HTBattery.level=-2;
         HTBatteryScene=scene;
         created=YES;
     }
+    CGRect bounds=source.bounds;
     CGFloat scale=MIN(MAX(bounds.size.height/240.0,0.8),1.6);
-    CGFloat start=onLeft ? CGRectGetMinX(bounds) : CGRectGetMaxX(content);
-    CGFloat bw=MIN(22*scale,width-12),bh=11*scale;
-    CGRect battery=CGRectMake(start+(width-bw)/2,CGRectGetMinY(bounds)+bounds.size.height*0.19,bw,bh);
+    const CGFloat aspect=2.35;
+    CGFloat bh=11*scale, bw=bh*aspect;
+    if (bw>dock.size.width-12) { bw=dock.size.width-12; bh=bw/aspect; }
+    CGRect battery=CGRectMake(CGRectGetMinX(dock)+(dock.size.width-bw)/2,CGRectGetMinY(bounds)+bounds.size.height*0.19,bw,bh);
+    battery=CGRectIntegral(battery);
     BOOL changed=!CGRectEqualToRect(HTBatteryLayer.frame,battery);
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     HTBatteryLayer.frame=battery;
@@ -180,9 +313,9 @@ static void HTLayoutBatteryLayer(void) {
     [CATransaction commit];
     HTUpdateBattery();
     if (created || changed) {
-        HTLog([NSString stringWithFormat:@"DOCK LAYER battery=%@ source=%@ active=%ld hidden=%d newWindow=NO",
-            NSStringFromCGRect(battery),NSStringFromCGRect(bounds),
-            (long)scene.activationState,HTBatteryLayer.hidden]);
+        HTLog([NSString stringWithFormat:@"DOCK LAYER battery=%@ dock=%@ left=%d active=%ld hidden=%d hitTestOff=%d",
+            NSStringFromCGRect(battery),NSStringFromCGRect(dock),onLeft,(long)scene.activationState,HTBatteryLayer.hidden,
+            [HTBatteryLayer respondsToSelector:@selector(allowsHitTesting)] ? !HTBatteryLayer.allowsHitTesting : -1]);
     }
 }
 static void HTScheduleLayout(void) {
@@ -192,11 +325,27 @@ static void HTScheduleLayout(void) {
         HTScheduled=NO; HTLayoutBatteryLayer();
     });
 }
+
+#pragma mark - Home attach (dock-safe)
+
+static BOOL HTInsideDock(UIView *v) {
+    for (UIView *x=v; x; x=x.superview) {
+        NSString *n=NSStringFromClass(x.class);
+        if ([n rangeOfString:@"Dock"].location!=NSNotFound || [n rangeOfString:@"StatusBar"].location!=NSNotFound) return YES;
+    }
+    return NO;
+}
 static void HTAttachHome(UIView *icon) {
     UIWindow *window=icon.window;
     if (!window) return;
-    UIView *home=icon;
-    while (home && ![NSStringFromClass(home.class) isEqualToString:@"DBAnimationView"]) home=home.superview;
+    if (HTInsideDock(icon)) {
+        if (!HTDockIconLogged) { HTDockIconLogged=YES; HTLog([NSString stringWithFormat:@"DOCK icon chain=%@",HTChain(icon)]); }
+        return; // never touch dock containers
+    }
+    // Only the wide Home content container qualifies; a narrow DBAnimationView (e.g. in the dock) is skipped.
+    UIView *home=icon.superview;
+    while (home && !([NSStringFromClass(home.class) isEqualToString:@"DBAnimationView"] &&
+                     home.bounds.size.width>=window.bounds.size.width*0.5)) home=home.superview;
     if (!home) return;
     HTWallpaper *wall=objc_getAssociatedObject(home,&HTWallpaperKey);
     if (!wall) {
@@ -204,9 +353,10 @@ static void HTAttachHome(UIView *icon) {
         wall.userInteractionEnabled=NO; wall.opaque=YES;
         wall.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
         wall.contentMode=UIViewContentModeRedraw;
+        HTNoHit(wall.layer);
         [home insertSubview:wall atIndex:0];
         objc_setAssociatedObject(home,&HTWallpaperKey,wall,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        HTLog([NSString stringWithFormat:@"HOME theme attached frame=%@",NSStringFromCGRect(home.bounds)]);
+        HTLog([NSString stringWithFormat:@"HOME theme attached frame=%@ chain=%@",NSStringFromCGRect(home.bounds),HTChain(home)]);
     }
     if (!CGRectEqualToRect(wall.frame,home.bounds)) wall.frame=home.bounds;
     BOOL newSource=HTSource!=window || HTHome!=home;
@@ -220,28 +370,69 @@ static void HTAttachHome(UIView *icon) {
                 if (expected && HTSource==expected) HTLayoutBatteryLayer();
             });
         }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(3.0*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+            if (expected && HTSource==expected) HTProbeDock();
+        });
     }
 }
+
+#pragma mark - Liquid Glass-style icon rim
+
+static void HTApplyGlass(UIView *iconView) {
+    CGRect b=iconView.bounds;
+    if (b.size.width<8 || b.size.height<8) return;
+    CGFloat r=MIN(b.size.width,b.size.height)*0.225;
+    iconView.layer.borderWidth=0;
+    iconView.layer.cornerRadius=r;
+    iconView.layer.cornerCurve=kCACornerCurveContinuous;
+    CAGradientLayer *rim=objc_getAssociatedObject(iconView,&HTRimKey);
+    if (!rim) {
+        rim=[CAGradientLayer layer];
+        rim.name=@"HomeTA.GlassRim";
+        rim.colors=@[(id)[UIColor colorWithWhite:1 alpha:0.60].CGColor,(id)[UIColor colorWithWhite:1 alpha:0.06].CGColor,
+                     (id)[UIColor colorWithWhite:1 alpha:0.06].CGColor,(id)[UIColor colorWithWhite:1 alpha:0.28].CGColor];
+        rim.locations=@[@0,@0.35,@0.70,@1];
+        rim.startPoint=CGPointMake(0.2,0); rim.endPoint=CGPointMake(0.8,1);
+        rim.actions=@{@"position":NSNull.null,@"bounds":NSNull.null,@"frame":NSNull.null};
+        CAShapeLayer *mask=[CAShapeLayer layer];
+        mask.fillColor=nil; mask.strokeColor=UIColor.blackColor.CGColor; mask.lineWidth=1.0;
+        mask.actions=@{@"path":NSNull.null,@"position":NSNull.null,@"bounds":NSNull.null};
+        rim.mask=mask;
+        HTNoHit(rim);
+        [iconView.layer addSublayer:rim];
+        objc_setAssociatedObject(iconView,&HTRimKey,rim,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (!CGRectEqualToRect(rim.frame,b)) {
+        [CATransaction begin]; [CATransaction setDisableActions:YES];
+        rim.frame=b;
+        CAShapeLayer *mask=(CAShapeLayer *)rim.mask;
+        mask.frame=(CGRect){CGPointZero,b.size};
+        mask.path=[UIBezierPath bezierPathWithRoundedRect:CGRectInset((CGRect){CGPointZero,b.size},0.5,0.5) cornerRadius:r-0.5].CGPath;
+        [CATransaction commit];
+    }
+}
+
 %hook SBIconImageView
 - (void)layoutSubviews {
     %orig;
-    self.layer.borderWidth=0.5;
-    self.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.18].CGColor;
-    self.layer.cornerRadius=MIN(self.bounds.size.width,self.bounds.size.height)*0.20;
-    self.layer.cornerCurve=kCACornerCurveContinuous;
+    HTApplyGlass(self);
     HTAttachHome(self);
 }
 %end
+
 %hook DBIconLabelBackdropView
 - (void)layoutSubviews {
     %orig;
-    self.backgroundColor=[UIColor colorWithWhite:0.025 alpha:0.42];
+    // iOS 26/27 CarPlay: plain white label over the wallpaper, no dark pill; soft shadow for legibility.
+    self.backgroundColor=UIColor.clearColor;
     self.layer.borderWidth=0;
-    self.layer.cornerRadius=5;
-    self.layer.cornerCurve=kCACornerCurveContinuous;
-    self.layer.masksToBounds=YES;
+    self.layer.masksToBounds=NO;
+    self.layer.shadowColor=UIColor.blackColor.CGColor;
+    self.layer.shadowOpacity=0.35;
+    self.layer.shadowRadius=3;
+    self.layer.shadowOffset=CGSizeMake(0,1);
     for (UIView *child in self.subviews) {
-        if ([NSStringFromClass(child.class) containsString:@"DBDashboardPlatterView"]) child.alpha=0.20;
+        if ([NSStringFromClass(child.class) containsString:@"DBDashboardPlatterView"]) child.alpha=0;
     }
 }
 %end
@@ -265,10 +456,10 @@ static void HTAttachHome(UIView *icon) {
         }]];
         [HTObservers addObject:[center addObserverForName:UISceneDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){
             if (n.object==HTSource.windowScene || n.object==HTBatteryScene) {
-                HTReleaseBatteryLayer(); HTSource=nil; HTHome=nil;
+                HTReleaseBatteryLayer(); HTSource=nil; HTHome=nil; HTProbed=nil;
             }
         }]];
-        HTLog(@"LOADED reference Home + battery CALayer; no overlay UIWindow; no recurring timer");
+        HTLog(@"LOADED iOS27-style Home + borderless battery; layers hit-test off; no overlay window; no timer");
         %init;
     }
 }

@@ -1,13 +1,28 @@
-# HomeTA 0.4.1 — dock touch regression repair
+# HomeTA 0.5.0 — iOS 27-style CarPlay Home + dock touch hardening
 
-User confirmed that 0.4.0 made the native dock unresponsive. This supersedes that build.
+Target: rootless (Dopamine), iOS 15–16.x, process `com.apple.CarPlayApp`. Supersedes 0.4.1.
 
-Removes the entire overlay UIWindow and dock glass view. A small bitmap CALayer is now attached directly to the existing source window's layer. It creates no window, view hit target, key-window change, or input-routing hook. The offscreen battery drawing helper is never inserted into a view hierarchy. Rendering is cached until size, screen scale, level, charging or low-power state changes. Layer changes disable implicit animations.
+## Dock touch
+- Every layer HomeTA adds (dock battery, Home wallpaper, icon glass rim) is marked non-hit-testable
+  via private `CALayer.allowsHitTesting=NO` (guarded by respondsToSelector), so the render server
+  cannot route a touch to them.
+- Battery layer zPosition lowered from 10000 to 100.
+- Home attach now skips any icon inside a view whose class contains `Dock`/`StatusBar`, and only
+  accepts a `DBAnimationView` at least half the window width, so nothing is ever inserted into a dock container.
+- One-shot diagnostics 3 s after CarPlay connects: `PROBE dock ...` (which view UIKit hit-tests at 4 points
+  down the dock) and `WINDOW ...` (every window in the scene). A leftover 0.4.0 overlay window shows up here.
 
-Retains 0.4.0's dark curved Home background, subtle icon borders and compact translucent labels. This follows the supplied reference; it is not a claim of exact Apple iOS 27 reproduction.
+## Look (reference: iOS 27 CarPlay coverage, Sept 2026)
+- Wallpaper: layered sweeping curves with soft shadows, inspired by the iOS 27 "Celosia" wallpaper; light/dark variants follow the CarPlay appearance.
+- Battery: iOS 27 borderless style — translucent track, no outline, solid fill; percentage punched out of the white fill;
+  green + bolt when charging, green when full, red at <=20 %, yellow in Low Power Mode.
+- Icons: continuous-corner squircle (22.5 %) with a Liquid Glass-style gradient rim instead of a flat border.
+- Labels: dark pill removed, plain label with soft shadow.
+This is an approximation drawn on iOS 16; Apple's own assets/material are not reproduced.
 
-Pin location still derives from the native Home inset and a proportional vertical offset. Cross-scene visibility on the device remains unverified. Layer zPosition cannot guarantee visibility above another process's scene. No claim of device success follows from CI compilation.
+## Test
+Install DEB, **respring** (mandatory, clears any 0.4.x state), reconnect CarPlay, wait 5 s.
+Check: 3 dock shortcuts, Home/dashboard button, page swipes, battery states, app return, reconnect.
+If the dock still ignores touches, send `/var/mobile/HomeTA.log` (the PROBE/WINDOW/DOCK lines) + a photo.
 
-Install the new rootless DEB, respring (required to unload 0.4.0's retained overlay window), then reconnect CarPlay. Check all three dock app shortcuts, Home/dashboard button, page swipes, battery, native app return and reconnect. If incomplete, send a screenshot plus /var/mobile/HomeTA.log. Logs rotate at 256 KiB with one backup.
-
-No new recurring timer, global hook, private touch forwarding, or SpringBoard injection. RootHide needs its own build.
+No new window, view hit target, recurring timer, global hook, touch forwarding or SpringBoard injection.
