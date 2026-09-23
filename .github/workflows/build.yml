@@ -37,6 +37,6 @@ jobs:
       - name: Upload DEB
         uses: actions/upload-artifact@v4
         with:
-          name: HomeTA-0.4.0-rootless-home-dock
+          name: HomeTA-0.4.1-rootless-dock-touch-fix
           path: packages/*.deb
           if-no-files-found: error
