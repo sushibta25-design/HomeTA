@@ -1,4 +1,4 @@
-// HomeTA 0.5.1 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.5.2 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.5.1"
+#define HT_VERSION @"0.5.2"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -239,6 +239,14 @@ static void HTProbeDock(void) {
     }
 }
 
+// The dock/status bar lives in DBStatusBarHostWindow (level 5), above the Home window (level -2/-1),
+// so the battery must be a sublayer of that window's layer tree to be visible.
+static UIWindow *HTDockWindow(UIWindowScene *scene) {
+    for (UIWindow *w in scene.windows)
+        if ([NSStringFromClass(w.class) isEqualToString:@"DBStatusBarHostWindow"]) return w;
+    return nil;
+}
+
 static void HTUpdateBattery(void) {
     if (!HTBattery || !HTBatteryLayer || CGRectIsEmpty(HTBatteryLayer.bounds)) return;
     UIDevice *device=UIDevice.currentDevice;
@@ -284,8 +292,10 @@ static void HTLayoutBatteryLayer(void) {
         HTBatteryLayer.hidden=YES;
         return;
     }
+    UIWindow *host=HTDockWindow(scene);
+    CALayer *parent=(host ?: source).layer;
     BOOL created=NO;
-    if (!HTBatteryLayer || HTBatteryLayer.superlayer!=source.layer) {
+    if (!HTBatteryLayer || HTBatteryLayer.superlayer!=parent) {
         HTReleaseBatteryLayer();
         HTBatteryLayer=[CALayer layer];
         HTBatteryLayer.name=@"HomeTA.DockBattery";
@@ -293,7 +303,7 @@ static void HTLayoutBatteryLayer(void) {
         HTBatteryLayer.actions=@{@"contents":NSNull.null,@"position":NSNull.null,
             @"bounds":NSNull.null,@"hidden":NSNull.null};
         HTNoHit(HTBatteryLayer);
-        [source.layer addSublayer:HTBatteryLayer];
+        [parent addSublayer:HTBatteryLayer];
         HTBattery=[HTBatteryView new]; HTBattery.level=-2;
         HTBatteryScene=scene;
         created=YES;
@@ -304,23 +314,24 @@ static void HTLayoutBatteryLayer(void) {
     CGFloat bh=11*scale, bw=bh*aspect;
     if (bw>dock.size.width-12) { bw=dock.size.width-12; bh=bw/aspect; }
     CGRect battery=CGRectMake(CGRectGetMinX(dock)+(dock.size.width-bw)/2,CGRectGetMinY(bounds)+bounds.size.height*0.19,bw,bh);
+    if (host) battery=[host convertRect:battery fromWindow:source];
     battery=CGRectIntegral(battery);
     BOOL changed=!CGRectEqualToRect(HTBatteryLayer.frame,battery);
     // Stay above every sibling layer (the native dock backdrop sits above zPosition 100 on some units).
     CGFloat topZ=0; NSUInteger siblings=0;
-    for (CALayer *l in source.layer.sublayers) { if (l!=HTBatteryLayer) { topZ=MAX(topZ,l.zPosition); siblings++; } }
+    for (CALayer *l in parent.sublayers) { if (l!=HTBatteryLayer) { topZ=MAX(topZ,l.zPosition); siblings++; } }
     CGFloat wantZ=MAX(10000,topZ+1);
-    BOOL isLast=source.layer.sublayers.lastObject==HTBatteryLayer;
+    BOOL isLast=parent.sublayers.lastObject==HTBatteryLayer;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
-    if (!isLast) { [HTBatteryLayer removeFromSuperlayer]; [source.layer addSublayer:HTBatteryLayer]; changed=YES; }
+    if (!isLast) { [HTBatteryLayer removeFromSuperlayer]; [parent addSublayer:HTBatteryLayer]; changed=YES; }
     if (HTBatteryLayer.zPosition!=wantZ) { HTBatteryLayer.zPosition=wantZ; changed=YES; }
     HTBatteryLayer.frame=battery;
     HTBatteryLayer.hidden=!HTSceneVisible(scene);
     [CATransaction commit];
     HTUpdateBattery();
     if (created || changed) {
-        HTLog([NSString stringWithFormat:@"DOCK LAYER battery=%@ dock=%@ left=%d active=%ld hidden=%d z=%.0f siblingTopZ=%.0f siblings=%lu contents=%d hitTestOff=%d",
-            NSStringFromCGRect(battery),NSStringFromCGRect(dock),onLeft,(long)scene.activationState,HTBatteryLayer.hidden,
+        HTLog([NSString stringWithFormat:@"DOCK LAYER host=%@ battery=%@ dock=%@ left=%d active=%ld hidden=%d z=%.0f siblingTopZ=%.0f siblings=%lu contents=%d hitTestOff=%d",
+            host ? NSStringFromClass(host.class) : @"source(fallback)",NSStringFromCGRect(battery),NSStringFromCGRect(dock),onLeft,(long)scene.activationState,HTBatteryLayer.hidden,
             HTBatteryLayer.zPosition,topZ,(unsigned long)siblings,HTBatteryLayer.contents!=nil,
             [HTBatteryLayer respondsToSelector:@selector(allowsHitTesting)] ? !HTBatteryLayer.allowsHitTesting : -1]);
     }

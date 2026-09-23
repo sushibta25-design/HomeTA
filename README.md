@@ -1,6 +1,6 @@
-# HomeTA 0.5.1 — iOS 27-style CarPlay Home + dock battery visibility fix
+# HomeTA 0.5.2 — iOS 27-style CarPlay Home + dock battery in the dock window
 
-Target: rootless (Dopamine), iOS 15–16.x, process `com.apple.CarPlayApp`. Supersedes 0.5.0 (battery was hidden under the native dock backdrop after zPosition was lowered to 100; now max(10000, top sibling + 1) and kept as last sublayer).
+Target: rootless (Dopamine), iOS 15–16.x, process `com.apple.CarPlayApp`. Supersedes 0.5.1. Log showed the Home window is level -2/-1 while the dock/status bar is DBStatusBarHostWindow (level 5), so a battery layer in the Home window was always covered. The battery CALayer is now a sublayer of DBStatusBarHostWindow (no new window, hit testing off); falls back to the Home window if that class is absent.
 
 ## Dock touch
 - Every layer HomeTA adds (dock battery, Home wallpaper, icon glass rim) is marked non-hit-testable
