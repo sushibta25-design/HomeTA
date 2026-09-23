@@ -1,14 +1,12 @@
-# HomeTA 0.5.4 — transition wallpaper fix
+# HomeTA 0.5.5 — fixed custom background
 
-The supplied 0.5.3 device log reports `WALL miss`: the background window is `UIWindow(-2) > UIView`, with no Wallpaper-named view. The Home wallpaper was inside DBAnimationView, so the original background could show while Home animated away.
+Based on the 0.5.3 Tweak.xm, as requested. Removes both its wallpaper-class search and its wallpaper UIView inside DBAnimationView. Does not use the 0.5.4 lower-window fallback.
 
-This version retains named-wallpaper discovery and adds a conservative fallback for a full-screen plain UIView in a lower-level UIWindow in the same scene. It rejects containers with child views, transformed containers, and windows at or above the Home/application window. The wallpaper is installed synchronously when Home is attached and refreshed by Home layout/appearance changes, with cached rendering and cleanup on scene disconnect.
+The custom wallpaper is now a non-hit-testable CALayer directly under the existing Home/application UIWindow, below all its native child layers. Its size comes from window bounds, with identity transform and implicit animation disabled. It is outside both the DBAnimationView and its parent, so their transformations and snapshots do not include this wallpaper. Native app and Home animations remain untouched. No additional window is created.
 
-Battery and dock touch behavior are unchanged. No added window or repeating timer. Decorative layers remain excluded from hit testing. If no qualified background host exists, the in-Home wallpaper remains and WALL miss is logged.
+Battery, icons, labels, and dock handling retain the 0.5.3 code. Rendering is cached until bounds, scale, or appearance changes. Source-window layout and appearance hooks only update the tracked CarPlay window. Wallpaper resources are released on scene disconnect.
 
-Target: Dopamine rootless, iOS 15–16.x, com.apple.CarPlayApp.
+## Validation
+Install the rootless DEB, respring, and reconnect CarPlay. Open/close Phone and Messages repeatedly; the background should stay still at every edge while the app moves. Check dock touch, Home, split-screen, light/dark mode and reconnect. Expected diagnostic: WALL FIXED sourceLevel=-1 ... outsideHome=1 contents=1. Compilation does not verify device rendering: if a native opaque surface covers this layer, send a new video and HomeTA.log.
 
-## Device verification
-Install the 0.5.4 DEB, respring and reconnect CarPlay. Open/return from Phone and Messages repeatedly; inspect all four edges and rounded corners during the animation. Check dock shortcuts, Home button, app touches, light/dark appearance and reconnect. The expected log is WALL dedicated backdrop followed by WALL host and WALL painted. Actual transition rendering still needs device verification; a successful build does not verify CarPlay behavior.
-
-The visual theme is custom drawn; it does not install a newer iOS interface.
+Target: Dopamine rootless, iOS 15–16.x. The wallpaper is custom drawn, not an official Apple iOS 27 asset.

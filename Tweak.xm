@@ -1,5 +1,5 @@
-// HomeTA 0.5.4 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
-// borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
+// HomeTA 0.5.5 — based on 0.5.3; custom wallpaper pinned to the source window.
+// The wallpaper is outside the Home/app animation and snapshot subtrees.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
@@ -11,7 +11,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.5.4"
+#define HT_VERSION @"0.5.5"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -200,7 +200,6 @@ static __weak UIWindow *HTSource;
 static __weak UIWindow *HTProbed;
 static BOOL HTScheduled=NO;
 static BOOL HTDockIconLogged=NO;
-static char HTWallpaperKey;
 static char HTRimKey;
 static NSMutableArray *HTObservers;
 static NSInteger HTLoggedLevel=-999;
@@ -287,115 +286,57 @@ static void HTReleaseBatteryLayer(void) {
     HTRenderedSize=CGSizeZero; HTRenderedScale=0;
 }
 
-#pragma mark - Stock wallpaper replacement
-// The old iOS 16 wallpaper peeks out around the app card while it zooms and at its rounded corners,
-// because HomeTA only painted inside the Home content view. Paint on top of the stock wallpaper view itself.
+#pragma mark - Fixed wallpaper outside the animated Home subtree
+
 static CALayer *HTWallLayer;
-static __weak UIView *HTWallHost;
+static __weak UIWindow *HTWallWindow;
 static HTWallpaper *HTWallPainter;
 static CGSize HTWallSize;
 static CGFloat HTWallScale;
 static NSInteger HTWallStyle;
-static BOOL HTWallMissLogged=NO;
 
 static void HTReleaseWallpaper(void) {
     [HTWallLayer removeFromSuperlayer];
-    HTWallLayer=nil; HTWallHost=nil; HTWallPainter=nil;
+    HTWallLayer=nil; HTWallWindow=nil; HTWallPainter=nil;
     HTWallSize=CGSizeZero; HTWallScale=0; HTWallStyle=0;
-    HTWallMissLogged=NO;
 }
 
-// The supplied 0.5.3 trace has UIWindow(-2) > UIView, without a
-// Wallpaper-named view. Accept only this dedicated, full-screen backdrop
-// below the application window; never paint over a remote app or the dock.
-static UIView *HTBackdropHost(UIWindow *w, UIWindow *source) {
-    if (!source || w==source || w.hidden || w.alpha<0.99 ||
-        w.windowLevel>=source.windowLevel ||
-        ![NSStringFromClass(w.class) isEqualToString:@"UIWindow"] ||
-        w.subviews.count!=1) return nil;
-    UIView *root=w.subviews.firstObject;
-    if (![NSStringFromClass(root.class) isEqualToString:@"UIView"] ||
-        root.subviews.count || root.hidden || root.alpha<0.99 ||
-        !CGAffineTransformIsIdentity(root.transform) ||
-        !CGAffineTransformIsIdentity(w.transform)) return nil;
-    CGRect extent=[root convertRect:root.bounds toView:source];
-    CGRect b=source.bounds;
-    if (fabs(CGRectGetMinX(extent)-CGRectGetMinX(b))>1 ||
-        fabs(CGRectGetMinY(extent)-CGRectGetMinY(b))>1 ||
-        fabs(extent.size.width-b.size.width)>1 ||
-        fabs(extent.size.height-b.size.height)>1) return nil;
-    return root;
-}
-
-static UIView *HTFindByClass(UIView *root, NSUInteger depth) {
-    NSString *n=NSStringFromClass(root.class);
-    if ([n hasPrefix:@"HT"]) return nil;
-    if ([n rangeOfString:@"Wallpaper"].location!=NSNotFound && ![root isKindOfClass:UIWindow.class]) return root;
-    if (depth==0) return nil;
-    for (UIView *sub in root.subviews) { UIView *f=HTFindByClass(sub,depth-1); if (f) return f; }
-    return nil;
-}
-static NSString *HTTree(UIView *v, NSUInteger depth) {
-    NSMutableString *out=[NSMutableString stringWithString:NSStringFromClass(v.class)];
-    if (depth && v.subviews.count) {
-        [out appendString:@"{"];
-        NSUInteger i=0;
-        for (UIView *sub in v.subviews) { if (i++) [out appendString:@","]; if (i>6) { [out appendString:@"…"]; break; } [out appendString:HTTree(sub,depth-1)]; }
-        [out appendString:@"}"];
-    }
-    return out;
-}
-static UIView *HTFindStockWallpaper(UIWindowScene *scene) {
-    NSArray *ws=[scene.windows sortedArrayUsingComparator:^NSComparisonResult(UIWindow *a, UIWindow *b){
-        return a.windowLevel<b.windowLevel ? NSOrderedAscending : (a.windowLevel>b.windowLevel ? NSOrderedDescending : NSOrderedSame);
-    }];
-    for (UIWindow *w in ws) {
-        if (w.hidden || w.windowLevel>HTSource.windowLevel) continue;
-        UIView *v=HTFindByClass(w,7);
-        if (v) return v;
-    }
-    for (UIWindow *w in ws) {
-        UIView *v=HTBackdropHost(w,HTSource);
-        if (v) {
-            HTLog([NSString stringWithFormat:@"WALL dedicated backdrop level=%.0f bounds=%@",w.windowLevel,NSStringFromCGRect(v.bounds)]);
-            return v;
-        }
-    }
-    if (!HTWallMissLogged) {
-        HTWallMissLogged=YES;
-        for (UIWindow *w in ws) if (w.windowLevel<=1)
-            HTLog([NSString stringWithFormat:@"WALL miss level=%.0f tree=%@",w.windowLevel,HTTree(w,4)]);
-    }
-    return nil;
-}
-static void HTUpdateStockWallpaper(UIWindowScene *scene) {
-    UIView *host=HTWallHost;
-    if (!host || !host.window || host.window.windowScene!=scene || host.window.hidden) {
+static void HTUpdateFixedWallpaper(void) {
+    UIWindow *window=HTSource;
+    if (!window || !HTHome || HTHome.window!=window || CGRectIsEmpty(window.bounds)) return;
+    BOOL created=HTWallWindow!=window || !HTWallLayer;
+    if (created) {
         HTReleaseWallpaper();
-        host=HTFindStockWallpaper(scene);
-        HTWallHost=host;
-        if (host) HTLog([NSString stringWithFormat:@"WALL host=%@ bounds=%@ windowLevel=%.0f",HTChain(host),NSStringFromCGRect(host.bounds),host.window.windowLevel]);
-    }
-    HTWallpaper *homeWall=HTHome ? objc_getAssociatedObject(HTHome,&HTWallpaperKey) : nil;
-    if (!host || CGRectIsEmpty(host.bounds)) { homeWall.hidden=NO; return; }
-    BOOL created=NO;
-    if (!HTWallLayer || HTWallLayer.superlayer!=host.layer) {
-        [HTWallLayer removeFromSuperlayer];
+        HTWallWindow=window;
         HTWallLayer=[CALayer layer];
-        HTWallLayer.name=@"HomeTA.Wallpaper";
+        HTWallLayer.name=@"HomeTA.FixedWallpaper";
         HTWallLayer.contentsGravity=kCAGravityResize;
-        HTWallLayer.actions=@{@"contents":NSNull.null,@"position":NSNull.null,@"bounds":NSNull.null,@"hidden":NSNull.null};
+        HTWallLayer.opaque=YES;
+        HTWallLayer.masksToBounds=YES;
+        HTWallLayer.actions=@{@"contents":NSNull.null,@"position":NSNull.null,
+            @"bounds":NSNull.null,@"transform":NSNull.null,@"opacity":NSNull.null,
+            @"hidden":NSNull.null,@"zPosition":NSNull.null};
         HTNoHit(HTWallLayer);
-        [host.layer addSublayer:HTWallLayer];
         HTWallPainter=[HTWallpaper new];
-        HTWallSize=CGSizeZero; created=YES;
     }
-    CGSize size=host.bounds.size;
-    CGFloat scale=MAX(1,host.window.screen.scale);
-    NSInteger style=host.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
+    // A direct source-window sublayer: above the stock background window,
+    // below BOTH the remote app host and Home container. Never put the
+    // wallpaper in DBAnimationView or its parent (which may also animate).
+    CALayer *parent=window.layer;
+    CGFloat bottomZ=0;
+    for (CALayer *child in parent.sublayers)
+        if (child!=HTWallLayer) bottomZ=MIN(bottomZ,child.zPosition);
+    CGSize size=window.bounds.size;
+    CGFloat scale=MAX(1,window.screen.scale);
+    NSInteger style=window.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
-    if (host.layer.sublayers.lastObject!=HTWallLayer) { [HTWallLayer removeFromSuperlayer]; [host.layer addSublayer:HTWallLayer]; }
-    HTWallLayer.frame=host.bounds;
+    if (HTWallLayer.superlayer!=parent || parent.sublayers.firstObject!=HTWallLayer)
+        [parent insertSublayer:HTWallLayer atIndex:0];
+    HTWallLayer.zPosition=bottomZ-1;
+    HTWallLayer.transform=CATransform3DIdentity;
+    HTWallLayer.opacity=1;
+    HTWallLayer.hidden=NO;
+    HTWallLayer.frame=window.bounds;
     if (!CGSizeEqualToSize(size,HTWallSize) || scale!=HTWallScale || style!=HTWallStyle || !HTWallLayer.contents) {
         HTWallPainter.htStyle=style;
         HTWallPainter.bounds=(CGRect){CGPointZero,size};
@@ -406,11 +347,10 @@ static void HTUpdateStockWallpaper(UIWindowScene *scene) {
         HTWallLayer.contentsScale=scale;
         HTWallLayer.contents=(__bridge id)image.CGImage;
         HTWallSize=size; HTWallScale=scale; HTWallStyle=style;
-        HTLog([NSString stringWithFormat:@"WALL painted size=%@ style=%ld created=%d",NSStringFromCGSize(size),(long)style,created]);
+        HTLog([NSString stringWithFormat:@"WALL FIXED sourceLevel=%.0f bounds=%@ style=%ld created=%d outsideHome=1 contents=%d",
+            window.windowLevel,NSStringFromCGRect(window.bounds),(long)style,created,HTWallLayer.contents!=nil]);
     }
     [CATransaction commit];
-    // Home is transparent over the stock wallpaper, so the in-Home copy is no longer needed.
-    homeWall.hidden=HTWallLayer.contents!=nil;
 }
 
 static void HTLayoutBatteryLayer(void) {
@@ -418,7 +358,7 @@ static void HTLayoutBatteryLayer(void) {
     UIView *home=HTHome;
     UIWindowScene *scene=source.windowScene;
     if (!scene) return;
-    HTUpdateStockWallpaper(scene);
+    HTUpdateFixedWallpaper();
     CGRect dock; BOOL onLeft=YES;
     if (!HTDockRect(source,home,&dock,&onLeft)) {
         static BOOL reported=NO;
@@ -499,24 +439,11 @@ static void HTAttachHome(UIView *icon) {
     while (home && !([NSStringFromClass(home.class) isEqualToString:@"DBAnimationView"] &&
                      home.bounds.size.width>=window.bounds.size.width*0.5)) home=home.superview;
     if (!home) return;
-    HTWallpaper *wall=objc_getAssociatedObject(home,&HTWallpaperKey);
-    if (!wall) {
-        wall=[[HTWallpaper alloc] initWithFrame:home.bounds];
-        wall.userInteractionEnabled=NO; wall.opaque=YES;
-        wall.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-        wall.contentMode=UIViewContentModeRedraw;
-        wall.hidden=HTWallLayer!=nil && HTWallHost!=nil;
-        HTNoHit(wall.layer);
-        [home insertSubview:wall atIndex:0];
-        objc_setAssociatedObject(home,&HTWallpaperKey,wall,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        HTLog([NSString stringWithFormat:@"HOME theme attached frame=%@ chain=%@",NSStringFromCGRect(home.bounds),HTChain(home)]);
-    }
-    if (!CGRectEqualToRect(wall.frame,home.bounds)) wall.frame=home.bounds;
     BOOL newSource=HTSource!=window || HTHome!=home;
-    if (HTSource && HTSource.windowScene!=window.windowScene) HTReleaseWallpaper();
     HTSource=window; HTHome=home;
-    // Install before the first transition is committed, not one run-loop later.
-    if (newSource) HTUpdateStockWallpaper(window.windowScene);
+    // No wallpaper UIView is inserted into Home. Snapshots/animations of
+    // Home now contain icons and labels only, never our background.
+    HTUpdateFixedWallpaper();
     HTScheduleLayout();
     if (newSource) {
         // Finite readiness retries, not a repeating scene scan or render loop.
@@ -568,17 +495,24 @@ static void HTApplyGlass(UIView *iconView) {
     }
 }
 
-// Refresh only the Home animation container. No global UIView/window hooks,
-// polling timer, touch interception, or changes to native transition timing.
 %hook DBAnimationView
 - (void)layoutSubviews {
     %orig;
-    if (self==HTHome && self.window==HTSource) HTUpdateStockWallpaper(self.window.windowScene);
+    if (self==HTHome) HTUpdateFixedWallpaper();
+}
+%end
+
+// Only the known source window is affected. Its bounds/appearance define
+// the stationary background, independent of animated Home geometry.
+%hook UIWindow
+- (void)layoutSubviews {
+    %orig;
+    if (self==HTSource) HTUpdateFixedWallpaper();
 }
 - (void)traitCollectionDidChange:(UITraitCollection *)previous {
     %orig;
-    if (self==HTHome && previous.userInterfaceStyle!=self.traitCollection.userInterfaceStyle)
-        HTUpdateStockWallpaper(self.window.windowScene);
+    if (self==HTSource && previous.userInterfaceStyle!=self.traitCollection.userInterfaceStyle)
+        HTUpdateFixedWallpaper();
 }
 %end
 
@@ -629,7 +563,7 @@ static void HTApplyGlass(UIView *iconView) {
                 HTReleaseBatteryLayer(); HTReleaseWallpaper(); HTSource=nil; HTHome=nil; HTProbed=nil;
             }
         }]];
-        HTLog(@"LOADED stationary transition wallpaper + borderless battery; layers hit-test off; no overlay window; no timer");
+        HTLog(@"LOADED base=0.5.3 fixed window wallpaper + borderless battery; layers hit-test off; no overlay window; no timer");
         %init;
     }
 }
