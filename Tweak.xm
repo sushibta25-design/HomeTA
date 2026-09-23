@@ -180,16 +180,30 @@ static void HTScheduleScan(UIWindow *window) {
 }
 
 %hook UIView
-- (void)didMoveToWindow { %orig; if (self.window) HTScheduleScan(self.window); }
-- (void)didAddSubview:(UIView *)subview { %orig; if (self.window) HTScheduleScan(self.window); }
+- (void)didMoveToWindow {
+    %orig;
+    UIWindow *window=self.window;
+    if (window) HTScheduleScan(window);
+}
+- (void)didAddSubview:(UIView *)subview {
+    %orig;
+    UIWindow *window=self.window;
+    if (window) HTScheduleScan(window);
+}
 %end
 
 %hook UIViewController
-- (void)viewDidAppear:(BOOL)animated { %orig; HTScheduleScan(self.view.window); }
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    HTScheduleScan(self.view.window);
+}
 %end
 
 %hook UICollectionView
-- (void)layoutSubviews { %orig; if (objc_getAssociatedObject(self,HTGridKey)) HTStyleGrid(self); }
+- (void)layoutSubviews {
+    %orig;
+    if (objc_getAssociatedObject(self,HTGridKey)) HTStyleGrid(self);
+}
 %end
 
 %hook UICollectionViewCell
