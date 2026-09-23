@@ -37,6 +37,6 @@ jobs:
       - name: Upload DEB
         uses: actions/upload-artifact@v4
         with:
-          name: HomeTA-0.3.3-rootless-safe
+          name: HomeTA-0.3.4-rootless-stable
           path: packages/*.deb
           if-no-files-found: error
