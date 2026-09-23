@@ -1,4 +1,4 @@
-// HomeTA 0.4.0 — reference-inspired Home and scene-bound dock battery.
+// HomeTA 0.4.1 — reference-inspired Home and scene-bound dock battery.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
@@ -13,7 +13,7 @@ static void HTLog(NSString *message) {
         [NSFileManager.defaultManager removeItemAtPath:[path stringByAppendingString:@".1"] error:nil];
         [NSFileManager.defaultManager moveItemAtPath:path toPath:[path stringByAppendingString:@".1"] error:nil];
     }
-    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.4.0] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.4.1] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
     NSFileHandle *handle=[NSFileHandle fileHandleForWritingAtPath:path];
     if (!handle) { [data writeToFile:path atomically:YES]; return; }
     @try { [handle seekToEndOfFile]; [handle writeData:data]; }
@@ -86,14 +86,13 @@ static void HTLog(NSString *message) {
 }
 @end
 
-@interface HTOverlayWindow : UIWindow @end
-@implementation HTOverlayWindow
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event { return nil; }
-@end
-
-static HTOverlayWindow *HTOverlay;
+// The battery is a bitmap CALayer in the existing window, never a UIWindow.
+// HTBattery is an offscreen drawing helper and is not added to any view tree.
+static CALayer *HTBatteryLayer;
 static HTBatteryView *HTBattery;
-static UIView *HTDockGlass;
+static __weak UIWindowScene *HTBatteryScene;
+static CGSize HTRenderedSize;
+static CGFloat HTRenderedScale;
 static __weak UIView *HTHome;
 static __weak UIWindow *HTSource;
 static BOOL HTScheduled=NO;
@@ -107,14 +106,26 @@ static BOOL HTSceneVisible(UIWindowScene *scene) {
                      scene.activationState==UISceneActivationStateForegroundInactive);
 }
 static void HTUpdateBattery(void) {
-    if (!HTBattery) return;
+    if (!HTBattery || !HTBatteryLayer || CGRectIsEmpty(HTBatteryLayer.bounds)) return;
     UIDevice *device=UIDevice.currentDevice;
     float level=device.batteryLevel;
     UIDeviceBatteryState state=device.batteryState;
     BOOL low=NSProcessInfo.processInfo.lowPowerModeEnabled;
-    if (HTBattery.level!=level || HTBattery.state!=state || HTBattery.lowPower!=low) {
+    CGSize size=HTBatteryLayer.bounds.size;
+    CGFloat scale=MAX(1,HTSource.screen.scale);
+    if (HTBattery.level!=level || HTBattery.state!=state || HTBattery.lowPower!=low ||
+        !CGSizeEqualToSize(size,HTRenderedSize) || scale!=HTRenderedScale || !HTBatteryLayer.contents) {
         HTBattery.level=level; HTBattery.state=state; HTBattery.lowPower=low;
-        [HTBattery setNeedsDisplay];
+        HTBattery.bounds=(CGRect){CGPointZero,size};
+        UIGraphicsBeginImageContextWithOptions(size,NO,scale);
+        [HTBattery drawRect:HTBattery.bounds];
+        UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        [CATransaction begin]; [CATransaction setDisableActions:YES];
+        HTBatteryLayer.contentsScale=scale;
+        HTBatteryLayer.contents=(__bridge id)image.CGImage;
+        [CATransaction commit];
+        HTRenderedSize=size; HTRenderedScale=scale;
     }
     NSInteger percent=level<0 ? -1 : (NSInteger)(level*100+0.5);
     if (percent!=HTLoggedLevel || state!=HTLoggedState) {
@@ -122,10 +133,12 @@ static void HTUpdateBattery(void) {
         HTLog([NSString stringWithFormat:@"BATTERY percent=%ld state=%ld",(long)percent,(long)state]);
     }
 }
-static void HTReleaseOverlay(void) {
-    HTOverlay.hidden=YES; HTOverlay=nil; HTBattery=nil; HTDockGlass=nil;
+static void HTReleaseBatteryLayer(void) {
+    [HTBatteryLayer removeFromSuperlayer];
+    HTBatteryLayer=nil; HTBattery=nil; HTBatteryScene=nil;
+    HTRenderedSize=CGSizeZero; HTRenderedScale=0;
 }
-static void HTLayoutOverlay(void) {
+static void HTLayoutBatteryLayer(void) {
     UIWindow *source=HTSource;
     UIView *home=HTHome;
     UIWindowScene *scene=source.windowScene;
@@ -139,62 +152,49 @@ static void HTLayoutOverlay(void) {
     if (width<24 || width>bounds.size.width*0.3) {
         static BOOL reported=NO;
         if (!reported) { reported=YES; HTLog([NSString stringWithFormat:@"WAIT inset bounds=%@ home=%@",NSStringFromCGRect(bounds),NSStringFromCGRect(content)]); }
-        if (HTOverlay) HTOverlay.hidden=YES;
+        HTBatteryLayer.hidden=YES;
         return;
     }
     BOOL created=NO;
-    if (!HTOverlay || HTOverlay.windowScene!=scene) {
-        HTReleaseOverlay();
-        HTOverlay=[[HTOverlayWindow alloc] initWithWindowScene:scene];
-        HTOverlay.backgroundColor=UIColor.clearColor;
-        HTOverlay.opaque=NO; HTOverlay.userInteractionEnabled=NO;
-        UIViewController *root=[UIViewController new];
-        root.view.backgroundColor=UIColor.clearColor; root.view.userInteractionEnabled=NO;
-        HTOverlay.rootViewController=root;
-        HTDockGlass=[UIView new]; HTDockGlass.userInteractionEnabled=NO;
-        HTDockGlass.backgroundColor=[UIColor colorWithWhite:0.02 alpha:0.16];
-        HTDockGlass.layer.cornerRadius=13;
-        HTDockGlass.layer.borderWidth=0.5;
-        HTDockGlass.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.12].CGColor;
-        [root.view addSubview:HTDockGlass];
+    if (!HTBatteryLayer || HTBatteryLayer.superlayer!=source.layer) {
+        HTReleaseBatteryLayer();
+        HTBatteryLayer=[CALayer layer];
+        HTBatteryLayer.name=@"HomeTA.DockBattery";
+        HTBatteryLayer.zPosition=10000;
+        HTBatteryLayer.contentsGravity=kCAGravityResizeAspect;
+        HTBatteryLayer.actions=@{@"contents":NSNull.null,@"position":NSNull.null,
+            @"bounds":NSNull.null,@"hidden":NSNull.null};
+        [source.layer addSublayer:HTBatteryLayer];
         HTBattery=[HTBatteryView new]; HTBattery.level=-2;
-        HTBattery.opaque=NO; HTBattery.backgroundColor=UIColor.clearColor;
-        HTBattery.userInteractionEnabled=NO;
-        [root.view addSubview:HTBattery];
+        HTBatteryScene=scene;
         created=YES;
     }
-    // Above ordinary dashboard windows, below alert-level split overlays.
-    HTOverlay.windowLevel=MAX(UIWindowLevelStatusBar+1,source.windowLevel+1);
-    CGRect sceneBounds=scene.coordinateSpace.bounds;
-    if (!CGRectEqualToRect(HTOverlay.frame,sceneBounds)) HTOverlay.frame=sceneBounds;
-    HTOverlay.rootViewController.view.frame=HTOverlay.bounds;
     CGFloat scale=MIN(MAX(bounds.size.height/240.0,0.8),1.6);
     CGFloat start=onLeft ? CGRectGetMinX(bounds) : CGRectGetMaxX(content);
-    CGRect dock=CGRectMake(start+2,CGRectGetMinY(bounds)+3,width-4,bounds.size.height-6);
-    HTDockGlass.frame=[source convertRect:dock toView:HTOverlay.rootViewController.view];
     CGFloat bw=MIN(22*scale,width-12),bh=11*scale;
     CGRect battery=CGRectMake(start+(width-bw)/2,CGRectGetMinY(bounds)+bounds.size.height*0.19,bw,bh);
-    CGRect converted=[source convertRect:battery toView:HTOverlay.rootViewController.view];
-    BOOL changed=!CGRectEqualToRect(HTBattery.frame,converted);
-    HTBattery.frame=converted;
-    HTOverlay.hidden=!HTSceneVisible(scene);
+    BOOL changed=!CGRectEqualToRect(HTBatteryLayer.frame,battery);
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    HTBatteryLayer.frame=battery;
+    HTBatteryLayer.hidden=!HTSceneVisible(scene);
+    [CATransaction commit];
     HTUpdateBattery();
     if (created || changed) {
-        HTLog([NSString stringWithFormat:@"DOCK battery=%@ source=%@ scene=%@ level=%.1f active=%ld hidden=%d",
-            NSStringFromCGRect(converted),NSStringFromCGRect(bounds),NSStringFromCGRect(sceneBounds),
-            (double)HTOverlay.windowLevel,(long)scene.activationState,HTOverlay.hidden]);
+        HTLog([NSString stringWithFormat:@"DOCK LAYER battery=%@ source=%@ active=%ld hidden=%d newWindow=NO",
+            NSStringFromCGRect(battery),NSStringFromCGRect(bounds),
+            (long)scene.activationState,HTBatteryLayer.hidden]);
     }
 }
 static void HTScheduleLayout(void) {
     if (HTScheduled) return;
     HTScheduled=YES;
     dispatch_async(dispatch_get_main_queue(), ^{
-        HTScheduled=NO; HTLayoutOverlay();
+        HTScheduled=NO; HTLayoutBatteryLayer();
     });
 }
 static void HTAttachHome(UIView *icon) {
     UIWindow *window=icon.window;
-    if (!window || [window isKindOfClass:HTOverlayWindow.class]) return;
+    if (!window) return;
     UIView *home=icon;
     while (home && ![NSStringFromClass(home.class) isEqualToString:@"DBAnimationView"]) home=home.superview;
     if (!home) return;
@@ -217,7 +217,7 @@ static void HTAttachHome(UIView *icon) {
         __weak UIWindow *expected=window;
         for (NSNumber *delay in @[@0.3,@1.0,@2.0]) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(delay.doubleValue*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
-                if (expected && HTSource==expected) HTLayoutOverlay();
+                if (expected && HTSource==expected) HTLayoutBatteryLayer();
             });
         }
     }
@@ -261,14 +261,14 @@ static void HTAttachHome(UIView *icon) {
             }]];
         }
         [HTObservers addObject:[center addObserverForName:UISceneDidEnterBackgroundNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){
-            if (n.object==HTOverlay.windowScene) HTOverlay.hidden=YES;
+            if (n.object==HTBatteryScene) HTBatteryLayer.hidden=YES;
         }]];
         [HTObservers addObject:[center addObserverForName:UISceneDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){
-            if (n.object==HTSource.windowScene || n.object==HTOverlay.windowScene) {
-                HTReleaseOverlay(); HTSource=nil; HTHome=nil;
+            if (n.object==HTSource.windowScene || n.object==HTBatteryScene) {
+                HTReleaseBatteryLayer(); HTSource=nil; HTHome=nil;
             }
         }]];
-        HTLog(@"LOADED reference Home + dock battery; two icon/label hooks; no recurring timer");
+        HTLog(@"LOADED reference Home + battery CALayer; no overlay UIWindow; no recurring timer");
         %init;
     }
 }
