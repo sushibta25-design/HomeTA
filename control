@@ -1,6 +1,6 @@
 Package: com.sushibta.hometa
 Name: HomeTA
-Version: 0.4.0
+Version: 0.4.1
 Architecture: iphoneos-arm64
 Description: Reference-inspired CarPlay Home theme and dock battery for rootless.
 Maintainer: sushibta25-design
