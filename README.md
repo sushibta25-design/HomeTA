@@ -1,16 +1,13 @@
-# HomeTA 0.3.0-rh1 (RootHide)
+# HomeTA 0.3.1 Rootless Safe Test
 
-HomeTA applies a lightweight iOS 27-inspired appearance directly to the verified native CarPlay Dashboard classes.
+This recovery build tests one verified native CarPlay class only: `SBIconImageView`.
 
-- Styles `DBFolderView` with one fixed glass-gradient panel.
-- Styles native `DBIconView` and `SBIconImageView` instances directly.
-- Restyles native label backdrops and page indicators.
-- Adds matching borders to Dashboard widgets.
-- Uses no polling timer, no scan loop and no overlay window.
+- Adds a cyan border to native Home icon images.
+- Does not insert or remove views.
+- Does not hook folder, widget, label or page-control classes.
+- Uses no timer, scan loop, gradient panel or overlay window.
 - Injects only into `com.apple.CarPlayApp`.
 
-The class mapping came from the 0.2.1 view-tree probe. Runtime confirmation is written to `/var/mobile/HomeTA.log` only once per styled component type.
+The same HomeTA source can support rootless and RootHide. They should be distributed as separate `.deb` packages because their Theos schemes, bootstrap paths and package architectures differ. This build defaults to `THEOS_PACKAGE_SCHEME=rootless`.
 
-HomeTA can be installed beside MultiTA.
-
-This branch is packaged with the official RootHide Theos scheme as `iphoneos-arm64e`. Enable tweak injection for `CarPlay`/`com.apple.CarPlayApp` in RootHide if the bootstrap does not enable it automatically.
+Runtime confirmation is written once to `/var/mobile/HomeTA.log`.
