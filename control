@@ -1,8 +1,8 @@
 Package: com.sushibta.hometa
 Name: HomeTA
-Version: 0.3.7
+Version: 0.3.8
 Architecture: iphoneos-arm64
-Description: Event-driven CarPlay battery indicator test based on verified 0.3.6 rootless hooks.
+Description: iOS 27-style sidebar battery indicator test for rootless CarPlay.
 Maintainer: sushibta25-design
 Author: sushibta25-design
 Section: Tweaks
