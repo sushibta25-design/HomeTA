@@ -1,4 +1,4 @@
-// HomeTA 0.3.8 Sidebar Battery Test — iOS 27-style placement.
+// HomeTA 0.3.9 Sidebar Host Battery Test — above the remote sidebar layer.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 
@@ -16,12 +16,22 @@ static const NSInteger HTBatteryImageTag=27003702;
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
-    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.3.8] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.3.9] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
     NSFileHandle *handle=[NSFileHandle fileHandleForWritingAtPath:path];
     if (!handle) { [data writeToFile:path atomically:YES]; return; }
     @try { [handle seekToEndOfFile]; [handle writeData:data]; }
     @catch (__unused NSException *exception) {}
     @finally { [handle closeFile]; }
+}
+
+static UIView *HTFindContextLayerHost(UIView *root) {
+    if (!root) return nil;
+    if ([NSStringFromClass(root.class) isEqualToString:@"_UIContextLayerHostView"]) return root;
+    for (UIView *child in root.subviews) {
+        UIView *match=HTFindContextLayerHost(child);
+        if (match) return match;
+    }
+    return nil;
 }
 
 static void HTUpdateBatteryIndicator(void) {
@@ -71,7 +81,10 @@ static void HTInstallBatteryIndicator(SBIconImageView *icon) {
     CGFloat batteryHeight=12.0*scale;
     CGFloat x=sidebarStart+MAX(0.0,(sidebarWidth-batteryWidth)*0.5);
     CGFloat y=CGRectGetHeight(window.bounds)*0.19;
-    UIView *container=[[UIView alloc] initWithFrame:CGRectMake(x,y,batteryWidth,batteryHeight)];
+    CGRect batteryFrame=CGRectMake(x,y,batteryWidth,batteryHeight);
+    UIView *host=HTFindContextLayerHost(window);
+    UIView *target=host ?: window;
+    UIView *container=[[UIView alloc] initWithFrame:[window convertRect:batteryFrame toView:target]];
     container.tag=HTBatteryContainerTag;
     container.userInteractionEnabled=NO;
     container.backgroundColor=UIColor.clearColor;
@@ -82,10 +95,11 @@ static void HTInstallBatteryIndicator(SBIconImageView *icon) {
     image.contentMode=UIViewContentModeScaleAspectFit;
     [container addSubview:image];
 
-    [window addSubview:container];
+    [target addSubview:container];
+    [target bringSubviewToFront:container];
     HTBatteryContainer=container;
     HTUpdateBatteryIndicator();
-    HTLog([NSString stringWithFormat:@"INSTALLED sidebar battery frame=%@ sidebarLeft=%d",NSStringFromCGRect(container.frame),sidebarOnLeft]);
+    HTLog([NSString stringWithFormat:@"INSTALLED sidebar battery frame=%@ sidebarLeft=%d host=%@",NSStringFromCGRect(container.frame),sidebarOnLeft,NSStringFromClass(target.class)]);
 }
 
 static void HTStyleLabelBackdrop(DBIconLabelBackdropView *label) {
@@ -143,7 +157,7 @@ static void HTStyleIconImage(SBIconImageView *image) {
             pageAppearance.pageIndicatorTintColor=[UIColor colorWithWhite:1.0 alpha:0.28];
             pageAppearance.currentPageIndicatorTintColor=[UIColor colorWithRed:0.08 green:0.84 blue:1.0 alpha:1.0];
         }
-        HTLog(@"LOADED sidebar-battery-test hooks=SBIconImageView,DBIconLabelBackdropView timer=NO");
+        HTLog(@"LOADED sidebar-host-battery-test hooks=SBIconImageView,DBIconLabelBackdropView timer=NO");
         %init;
     }
 }
