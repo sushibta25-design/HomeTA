@@ -1,11 +1,12 @@
-# HomeTA 0.3.2 Rootless Safe Test
+# HomeTA 0.3.3 Rootless Safe Test
 
-This incremental build keeps the verified `SBIconImageView` hook and adds the verified native `DBIconLabelBackdropView` hook.
+This incremental build keeps the verified native Home hooks and adds the verified `DBIconListPageControl` hook.
 
-- Adds a cyan border to native Home icon images.
+- Adds a rounded cyan border that follows native Home icon corners.
 - Does not insert or remove views.
-- Adds a dark glass color and cyan edge to native Home labels without inserting views.
-- Does not hook folder, widget or page-control classes.
+- Adds a subtler dark glass color and cyan edge to native Home labels.
+- Colors the active native page indicator cyan and dims inactive indicators.
+- Does not hook folder or widget classes.
 - Uses no timer, scan loop, gradient panel or overlay window.
 - Injects only into `com.apple.CarPlayApp`.
 
