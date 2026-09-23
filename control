@@ -1,8 +1,8 @@
 Package: com.sushibta.hometa
 Name: HomeTA
-Version: 0.3.0-rh1
-Architecture: iphoneos-arm64e
-Description: Native lightweight iOS 27-style CarPlay Home appearance for RootHide.
+Version: 0.3.1
+Architecture: iphoneos-arm64
+Description: Safe single-hook CarPlay Home appearance test for rootless.
 Maintainer: sushibta25-design
 Author: sushibta25-design
 Section: Tweaks
