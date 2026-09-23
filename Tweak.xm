@@ -1,270 +1,214 @@
-// HomeTA 0.2.1 — CarPlay Home hierarchy probe.
+// HomeTA 0.3.0 — native CarPlay Home restyling using verified Dashboard classes.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 
-static const void *HTPendingKey=&HTPendingKey;
-static const void *HTStyledKey=&HTStyledKey;
-static const void *HTGridKey=&HTGridKey;
-static const void *HTCellKey=&HTCellKey;
-static const void *HTDockKey=&HTDockKey;
-static NSString *HTLastSignature;
-static NSString *HTLastDumpSignature;
+@interface DBFolderView : UIView @end
+@interface DBIconView : UIView @end
+@interface DBIconLabelBackdropView : UIView @end
+@interface SBIconImageView : UIImageView @end
+@interface SBIconSimpleLabelView : UIImageView @end
+@interface DBIconListPageControl : UIPageControl @end
+@interface DBWidgetView : UIView @end
 
-static UIColor *HTGlass(CGFloat alpha) { return [UIColor colorWithRed:0.025 green:0.050 blue:0.090 alpha:alpha]; }
-static UIColor *HTAccent(void) { return [UIColor colorWithRed:0.10 green:0.84 blue:1.0 alpha:1.0]; }
+static const void *HTRootPanelKey=&HTRootPanelKey;
+static const void *HTRootGradientKey=&HTRootGradientKey;
+static const void *HTIconHaloKey=&HTIconHaloKey;
+static const void *HTIconGradientKey=&HTIconGradientKey;
+static BOOL HTLoggedFolder=NO;
+static BOOL HTLoggedIcon=NO;
+static BOOL HTLoggedPage=NO;
+
+static UIColor *HTNavy(CGFloat alpha) {
+    return [UIColor colorWithRed:0.015 green:0.040 blue:0.085 alpha:alpha];
+}
+static UIColor *HTCyan(CGFloat alpha) {
+    return [UIColor colorWithRed:0.08 green:0.84 blue:1.0 alpha:alpha];
+}
+static UIColor *HTOrange(CGFloat alpha) {
+    return [UIColor colorWithRed:1.0 green:0.52 blue:0.08 alpha:alpha];
+}
+static void HTContinuousCorners(CALayer *layer, CGFloat radius) {
+    layer.cornerRadius=radius;
+    if (@available(iOS 13.0,*)) layer.cornerCurve=kCACornerCurveContinuous;
+}
 static void HTLog(NSString *format, ...) {
     va_list args; va_start(args,format);
     NSString *message=[[NSString alloc] initWithFormat:format arguments:args]; va_end(args);
     NSString *path=@"/var/mobile/HomeTA.log";
     NSDictionary *attributes=[NSFileManager.defaultManager attributesOfItemAtPath:path error:nil];
-    if ([attributes fileSize]>512*1024) {
+    if ([attributes fileSize]>128*1024) {
         [NSFileManager.defaultManager removeItemAtPath:[path stringByAppendingString:@".1"] error:nil];
         [NSFileManager.defaultManager moveItemAtPath:path toPath:[path stringByAppendingString:@".1"] error:nil];
     }
-    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.2.1] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *data=[[NSString stringWithFormat:@"%@ [HomeTA 0.3.0] %@\n",NSDate.date,message] dataUsingEncoding:NSUTF8StringEncoding];
     NSFileHandle *handle=[NSFileHandle fileHandleForWritingAtPath:path];
     if (!handle) { [data writeToFile:path atomically:YES]; return; }
     @try { [handle seekToEndOfFile]; [handle writeData:data]; }
     @catch (__unused NSException *exception) {}
     @finally { [handle closeFile]; }
 }
-static NSString *HTSanitize(NSString *value) {
-    if (!value.length) return @"";
-    NSString *clean=[value stringByReplacingOccurrencesOfString:@"\n" withString:@"\\n"];
-    clean=[clean stringByReplacingOccurrencesOfString:@"\r" withString:@"\\r"];
-    if (clean.length>80) clean=[[clean substringToIndex:80] stringByAppendingString:@"…"];
-    return clean;
+static CAGradientLayer *HTGradient(NSArray *colors, NSArray<NSNumber *> *locations) {
+    CAGradientLayer *gradient=[CAGradientLayer layer];
+    gradient.colors=colors;
+    gradient.locations=locations;
+    gradient.startPoint=CGPointMake(0.0,0.0);
+    gradient.endPoint=CGPointMake(1.0,1.0);
+    return gradient;
 }
-static void HTAppendView(NSMutableString *dump, UIView *view, UIWindow *window, NSInteger depth, NSInteger *budget) {
-    if (!view || depth>22 || (*budget)--<=0) return;
-    CGRect frame=CGRectZero;
-    @try { frame=[view convertRect:view.bounds toView:window]; }
-    @catch (__unused NSException *exception) {}
-    NSString *detail=@"";
-    if ([view isKindOfClass:UILabel.class]) {
-        UILabel *label=(UILabel *)view;
-        detail=[NSString stringWithFormat:@" text=\"%@\" font=%.1f",HTSanitize(label.text),label.font.pointSize];
-    } else if ([view isKindOfClass:UIImageView.class]) {
-        UIImageView *image=(UIImageView *)view;
-        detail=[NSString stringWithFormat:@" image=%@ imageSize=%@ mode=%ld",image.image ? @"YES" : @"NO",image.image ? NSStringFromCGSize(image.image.size) : @"{0, 0}",(long)image.contentMode];
-    } else if ([view isKindOfClass:UIButton.class]) {
-        UIButton *button=(UIButton *)view;
-        detail=[NSString stringWithFormat:@" title=\"%@\"",HTSanitize([button titleForState:UIControlStateNormal])];
+static void HTStyleFolder(DBFolderView *folder) {
+    UIView *panel=objc_getAssociatedObject(folder,HTRootPanelKey);
+    CAGradientLayer *gradient=objc_getAssociatedObject(folder,HTRootGradientKey);
+    if (!panel) {
+        panel=[UIView new];
+        panel.userInteractionEnabled=NO;
+        panel.backgroundColor=HTNavy(0.24);
+        panel.layer.borderWidth=0.8;
+        panel.layer.borderColor=[UIColor colorWithWhite:1.0 alpha:0.20].CGColor;
+        HTContinuousCorners(panel.layer,27.0);
+        panel.clipsToBounds=YES;
+        gradient=HTGradient(@[(id)HTCyan(0.17).CGColor,(id)HTNavy(0.10).CGColor,(id)HTOrange(0.10).CGColor],@[@0.0,@0.55,@1.0]);
+        [panel.layer insertSublayer:gradient atIndex:0];
+        [folder insertSubview:panel atIndex:0];
+        objc_setAssociatedObject(folder,HTRootPanelKey,panel,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(folder,HTRootGradientKey,gradient,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else {
+        [folder sendSubviewToBack:panel];
     }
-    NSString *accessibility=HTSanitize(view.accessibilityLabel);
-    NSString *identifier=HTSanitize(view.accessibilityIdentifier);
-    [dump appendFormat:@"%03ld d=%02ld %@ parent=%@ frame=%@ bounds=%@ a=%.2f hidden=%d ui=%d sub=%lu acc=\"%@\" id=\"%@\"%@\n",
-     (long)(1601-*budget),(long)depth,NSStringFromClass(view.class),view.superview ? NSStringFromClass(view.superview.class) : @"nil",
-     NSStringFromCGRect(frame),NSStringFromCGRect(view.bounds),view.alpha,view.hidden,view.userInteractionEnabled,
-     (unsigned long)view.subviews.count,accessibility,identifier,detail];
-    for (UIView *child in view.subviews) HTAppendView(dump,child,window,depth+1,budget);
+    panel.frame=UIEdgeInsetsInsetRect(folder.bounds,UIEdgeInsetsMake(6,6,8,6));
+    gradient.frame=panel.bounds;
+    if (!HTLoggedFolder) { HTLoggedFolder=YES; HTLog(@"STYLED DBFolderView frame=%@",NSStringFromCGRect(folder.frame)); }
 }
-static void HTDumpHierarchy(UIWindow *window, NSString *signature) {
-    if (!window || [signature isEqual:HTLastDumpSignature]) return;
-    HTLastDumpSignature=[signature copy];
-    NSMutableString *dump=[NSMutableString stringWithFormat:@"HomeTA 0.2.1 VIEW TREE\nDate: %@\nBundle: %@\nScene: %@\nWindow: %@ frame=%@ level=%.1f root=%@\nSignature: %@\n\n",
-                           NSDate.date,NSBundle.mainBundle.bundleIdentifier,
-                           window.windowScene.session.persistentIdentifier ?: @"",
-                           NSStringFromClass(window.class),NSStringFromCGRect(window.frame),window.windowLevel,
-                           window.rootViewController ? NSStringFromClass(window.rootViewController.class) : @"nil",signature];
-    NSInteger budget=1600;
-    HTAppendView(dump,window,window,0,&budget);
-    [dump writeToFile:@"/var/mobile/HomeTAViewTree.log" atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    HTLog(@"VIEW_TREE_WRITTEN lines=%ld path=/var/mobile/HomeTAViewTree.log",(long)(1600-budget));
+static SBIconImageView *HTIconImage(DBIconView *icon) {
+    Class imageClass=objc_getClass("SBIconImageView");
+    for (UIView *view in icon.subviews) if (imageClass && [view isKindOfClass:imageClass]) return (SBIconImageView *)view;
+    return nil;
 }
-static BOOL HTDashboardWindow(UIWindow *window) {
-    if (!window || !window.windowScene) return NO;
-    NSString *identifier=window.windowScene.session.persistentIdentifier ?: @"";
-    return [identifier containsString:@"DBDashboard"] || [identifier containsString:@"CarPlay"];
-}
-static BOOL HTVisible(UIView *view) {
-    return view && view.window && !view.hidden && view.alpha>0.02 && view.bounds.size.width>2 && view.bounds.size.height>2;
-}
-static void HTCollect(UIView *root, NSMutableArray<UIView *> *views, NSInteger depth, NSInteger *budget) {
-    if (!root || depth>18 || (*budget)--<=0) return;
-    [views addObject:root];
-    for (UIView *child in root.subviews) HTCollect(child,views,depth+1,budget);
-}
-static NSInteger HTDescendantCount(UIView *root, Class wanted, NSInteger budget) {
-    if (!root || budget<=0) return 0;
-    NSInteger count=[root isKindOfClass:wanted] ? 1 : 0;
-    for (UIView *child in root.subviews) {
-        if (--budget<=0) break;
-        count+=HTDescendantCount(child,wanted,budget);
+static void HTStyleIcon(DBIconView *icon) {
+    SBIconImageView *image=HTIconImage(icon);
+    if (!image) return;
+    UIView *halo=objc_getAssociatedObject(icon,HTIconHaloKey);
+    CAGradientLayer *gradient=objc_getAssociatedObject(icon,HTIconGradientKey);
+    if (!halo) {
+        halo=[UIView new];
+        halo.userInteractionEnabled=NO;
+        halo.backgroundColor=HTNavy(0.32);
+        halo.layer.borderWidth=0.7;
+        halo.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.28].CGColor;
+        HTContinuousCorners(halo.layer,19.0);
+        gradient=HTGradient(@[(id)HTCyan(0.24).CGColor,(id)[UIColor colorWithWhite:1 alpha:0.05].CGColor,(id)HTOrange(0.18).CGColor],@[@0.0,@0.55,@1.0]);
+        [halo.layer insertSublayer:gradient atIndex:0];
+        [icon insertSubview:halo atIndex:0];
+        objc_setAssociatedObject(icon,HTIconHaloKey,halo,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(icon,HTIconGradientKey,gradient,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else {
+        [icon sendSubviewToBack:halo];
     }
-    return count;
+    halo.frame=CGRectInset(image.frame,-4.0,-4.0);
+    gradient.frame=halo.bounds;
+    image.layer.borderWidth=0.65;
+    image.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.32].CGColor;
+    HTContinuousCorners(image.layer,15.5);
+    image.layer.masksToBounds=YES;
+    if (!HTLoggedIcon) { HTLoggedIcon=YES; HTLog(@"STYLED DBIconView image=%@",NSStringFromCGRect(image.frame)); }
 }
-static void HTStyleGlass(UIView *view, CGFloat radius, CGFloat alpha, UIColor *border) {
-    view.backgroundColor=HTGlass(alpha);
-    view.layer.cornerRadius=radius;
-    if (@available(iOS 13.0,*)) view.layer.cornerCurve=kCACornerCurveContinuous;
-    view.layer.borderWidth=0.8;
-    view.layer.borderColor=(border ?: [UIColor colorWithWhite:1 alpha:0.20]).CGColor;
+static void HTStyleLabelBackdrop(DBIconLabelBackdropView *view) {
+    view.backgroundColor=HTNavy(0.62);
+    view.layer.borderWidth=0.55;
+    view.layer.borderColor=HTCyan(0.28).CGColor;
+    HTContinuousCorners(view.layer,8.5);
+    view.layer.masksToBounds=YES;
 }
-static void HTStyleContents(UIView *container) {
-    NSInteger budget=220;
-    NSMutableArray<UIView *> *views=[NSMutableArray new];
-    HTCollect(container,views,0,&budget);
-    for (UIView *view in views) {
-        if ([view isKindOfClass:UILabel.class]) {
-            UILabel *label=(UILabel *)view;
-            label.textColor=UIColor.whiteColor;
-            if (label.font.pointSize>=10) label.font=[UIFont systemFontOfSize:label.font.pointSize weight:UIFontWeightSemibold];
-            label.backgroundColor=[UIColor colorWithWhite:0 alpha:0.38];
-            label.layer.cornerRadius=7; label.clipsToBounds=YES;
-        } else if ([view isKindOfClass:UIImageView.class]) {
-            UIImageView *image=(UIImageView *)view;
-            CGFloat edge=MIN(image.bounds.size.width,image.bounds.size.height);
-            if (!image.image || edge<26) continue;
-            image.layer.cornerRadius=MIN(18,edge*0.22);
-            if (@available(iOS 13.0,*)) image.layer.cornerCurve=kCACornerCurveContinuous;
-            image.layer.borderWidth=0.65;
-            image.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.30].CGColor;
-            image.clipsToBounds=YES;
-        }
-    }
+static void HTStyleLabelImage(SBIconSimpleLabelView *view) {
+    view.layer.shadowColor=UIColor.blackColor.CGColor;
+    view.layer.shadowOpacity=0.72;
+    view.layer.shadowRadius=2.0;
+    view.layer.shadowOffset=CGSizeMake(0,1);
 }
-static BOOL HTIsIconCandidate(UIView *view, UIWindow *window) {
-    if (!HTVisible(view) || view==window || [view isKindOfClass:UIImageView.class] || [view isKindOfClass:UILabel.class] || [view isKindOfClass:UICollectionView.class]) return NO;
-    CGRect frame=[view convertRect:view.bounds toView:window];
-    CGFloat sw=window.bounds.size.width, sh=window.bounds.size.height;
-    if (frame.size.width<48 || frame.size.height<48 || frame.size.width>sw*0.34 || frame.size.height>sh*0.48) return NO;
-    NSInteger images=HTDescendantCount(view,UIImageView.class,100);
-    NSInteger labels=HTDescendantCount(view,UILabel.class,100);
-    NSString *name=NSStringFromClass(view.class).lowercaseString;
-    BOOL named=[name containsString:@"icon"] || [name containsString:@"cell"] || [name containsString:@"application"] || [name containsString:@"button"];
-    BOOL interactive=[view isKindOfClass:UIControl.class] || view.gestureRecognizers.count>0 || view.isAccessibilityElement;
-    return images>=1 && labels>=1 && (named || interactive);
+static void HTStylePageControl(DBIconListPageControl *page) {
+    page.pageIndicatorTintColor=[UIColor colorWithWhite:1 alpha:0.24];
+    page.currentPageIndicatorTintColor=HTCyan(1.0);
+    if (!HTLoggedPage) { HTLoggedPage=YES; HTLog(@"STYLED DBIconListPageControl pages=%ld",(long)page.numberOfPages); }
 }
-static void HTStyleIcon(UIView *view) {
-    if (objc_getAssociatedObject(view,HTStyledKey)) return;
-    objc_setAssociatedObject(view,HTStyledKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(view,HTCellKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    HTStyleGlass(view,22,0.30,[UIColor colorWithWhite:1 alpha:0.17]);
-    HTStyleContents(view);
-}
-static void HTStyleGrid(UICollectionView *grid) {
-    if (!grid) return;
-    objc_setAssociatedObject(grid,HTGridKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    HTStyleGlass(grid,30,0.20,[UIColor colorWithWhite:1 alpha:0.18]);
-    grid.clipsToBounds=YES;
-    for (UICollectionViewCell *cell in grid.visibleCells) {
-        objc_setAssociatedObject(cell,HTCellKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        HTStyleGlass(cell.contentView,22,0.30,[UIColor colorWithWhite:1 alpha:0.17]);
-        HTStyleContents(cell.contentView);
-    }
-}
-static void HTStyleDock(UIView *dock) {
-    if (!dock || objc_getAssociatedObject(dock,HTDockKey)) return;
-    objc_setAssociatedObject(dock,HTDockKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    UIVisualEffectView *material=[[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark]];
-    material.frame=dock.bounds;
-    material.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-    material.userInteractionEnabled=NO;
-    material.layer.cornerRadius=24;
-    if (@available(iOS 13.0,*)) material.layer.cornerCurve=kCACornerCurveContinuous;
-    material.layer.borderWidth=0.8;
-    material.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.23].CGColor;
-    material.clipsToBounds=YES;
-    [dock insertSubview:material atIndex:0];
-    dock.backgroundColor=UIColor.clearColor;
-}
-static void HTScanWindow(UIWindow *window) {
-    if (!HTDashboardWindow(window) || !window.rootViewController.view) return;
-    NSInteger budget=1600;
-    NSMutableArray<UIView *> *views=[NSMutableArray new];
-    HTCollect(window.rootViewController.view,views,0,&budget);
-    NSMutableArray<UIView *> *icons=[NSMutableArray new];
-    UIView *dock=nil; CGFloat dockScore=0;
-    NSInteger grids=0, pages=0;
-    CGFloat sw=window.bounds.size.width, sh=window.bounds.size.height;
-    for (UIView *view in views) {
-        if (!HTVisible(view)) continue;
-        if ([view isKindOfClass:UIPageControl.class]) {
-            UIPageControl *page=(UIPageControl *)view;
-            page.pageIndicatorTintColor=[UIColor colorWithWhite:1 alpha:0.25];
-            page.currentPageIndicatorTintColor=HTAccent(); pages++;
-        }
-        if ([view isKindOfClass:UICollectionView.class]) {
-            UICollectionView *collection=(UICollectionView *)view;
-            CGRect frame=[collection convertRect:collection.bounds toView:window];
-            if (frame.size.width*frame.size.height>sw*sh*0.18 && HTDescendantCount(collection,UIImageView.class,500)>=3) { HTStyleGrid(collection); grids++; }
-        }
-        if (HTIsIconCandidate(view,window)) [icons addObject:view];
-        NSString *name=NSStringFromClass(view.class).lowercaseString;
-        CGRect frame=[view convertRect:view.bounds toView:window];
-        BOOL named=[name containsString:@"dock"];
-        BOOL shaped=frame.size.width>38 && frame.size.width<sw*0.28 && frame.size.height>sh*0.45;
-        if (named || shaped) {
-            NSInteger images=HTDescendantCount(view,UIImageView.class,350);
-            CGFloat score=(named ? 1000 : 0)+images*100+frame.size.height-frame.size.width;
-            if (images>=2 && score>dockScore) { dock=view; dockScore=score; }
-        }
-    }
-    for (UIView *icon in icons) HTStyleIcon(icon);
-    HTStyleDock(dock);
-    NSString *signature=[NSString stringWithFormat:@"%@/%lu/%lu/%ld/%ld/%@",NSStringFromCGSize(window.bounds.size),(unsigned long)views.count,(unsigned long)icons.count,(long)grids,(long)pages,dock ? NSStringFromClass(dock.class) : @"none"];
-    if (![signature isEqual:HTLastSignature]) {
-        HTLastSignature=signature;
-        NSMutableOrderedSet<NSString *> *classes=[NSMutableOrderedSet new];
-        for (UIView *icon in icons) if (classes.count<16) [classes addObject:NSStringFromClass(icon.class)];
-        HTLog(@"SCAN signature=%@ iconClasses=%@",signature,classes.array);
-        HTDumpHierarchy(window,signature);
-    }
-}
-static void HTScheduleScan(UIWindow *window) {
-    if (!HTDashboardWindow(window) || objc_getAssociatedObject(window,HTPendingKey)) return;
-    objc_setAssociatedObject(window,HTPendingKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    __weak UIWindow *weakWindow=window;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,120*NSEC_PER_MSEC),dispatch_get_main_queue(),^{
-        UIWindow *strongWindow=weakWindow;
-        if (!strongWindow) return;
-        objc_setAssociatedObject(strongWindow,HTPendingKey,nil,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        HTScanWindow(strongWindow);
-    });
+static void HTStyleWidget(DBWidgetView *widget) {
+    widget.layer.borderWidth=0.75;
+    widget.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.22].CGColor;
+    HTContinuousCorners(widget.layer,22.0);
+    widget.layer.masksToBounds=YES;
 }
 
-%hook UIView
-- (void)didMoveToWindow {
-    %orig;
-    UIWindow *window=self.window;
-    if (window) HTScheduleScan(window);
-}
-- (void)didAddSubview:(UIView *)subview {
-    %orig;
-    UIWindow *window=self.window;
-    if (window) HTScheduleScan(window);
-}
-%end
-
-%hook UIViewController
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
-    HTScheduleScan(self.view.window);
-}
-%end
-
-%hook UICollectionView
+%hook DBFolderView
 - (void)layoutSubviews {
     %orig;
-    if (objc_getAssociatedObject(self,HTGridKey)) HTStyleGrid(self);
+    HTStyleFolder(self);
+}
+- (void)didMoveToWindow {
+    %orig;
+    if (self.window) HTStyleFolder(self);
 }
 %end
 
-%hook UICollectionViewCell
-- (void)setHighlighted:(BOOL)highlighted {
+%hook DBIconView
+- (void)layoutSubviews {
     %orig;
-    if (!objc_getAssociatedObject(self,HTCellKey)) return;
-    [UIView animateWithDuration:highlighted ? 0.08 : 0.20 delay:0 usingSpringWithDamping:0.78 initialSpringVelocity:0 options:UIViewAnimationOptionBeginFromCurrentState|UIViewAnimationOptionAllowUserInteraction animations:^{ self.transform=highlighted ? CGAffineTransformMakeScale(0.92,0.92) : CGAffineTransformIdentity; } completion:nil];
+    HTStyleIcon(self);
+}
+- (void)didMoveToWindow {
+    %orig;
+    if (self.window) HTStyleIcon(self);
+}
+%end
+
+%hook SBIconImageView
+- (void)layoutSubviews {
+    %orig;
+    self.layer.borderWidth=0.65;
+    self.layer.borderColor=[UIColor colorWithWhite:1 alpha:0.32].CGColor;
+    HTContinuousCorners(self.layer,15.5);
+    self.layer.masksToBounds=YES;
+}
+%end
+
+%hook DBIconLabelBackdropView
+- (void)layoutSubviews {
+    %orig;
+    HTStyleLabelBackdrop(self);
+}
+- (void)didMoveToWindow {
+    %orig;
+    if (self.window) HTStyleLabelBackdrop(self);
+}
+%end
+
+%hook SBIconSimpleLabelView
+- (void)layoutSubviews {
+    %orig;
+    HTStyleLabelImage(self);
+}
+%end
+
+%hook DBIconListPageControl
+- (void)layoutSubviews {
+    %orig;
+    HTStylePageControl(self);
+}
+- (void)didMoveToWindow {
+    %orig;
+    if (self.window) HTStylePageControl(self);
+}
+%end
+
+%hook DBWidgetView
+- (void)layoutSubviews {
+    %orig;
+    HTStyleWidget(self);
 }
 %end
 
 %ctor {
     @autoreleasepool {
         if (![NSBundle.mainBundle.bundleIdentifier isEqual:@"com.apple.CarPlayApp"]) return;
-        [[NSFileManager defaultManager] removeItemAtPath:@"/var/mobile/HomeTAViewTree.log" error:nil];
-        HTLog(@"LOADED process=%@ probe=view-tree",NSBundle.mainBundle.bundleIdentifier);
+        HTLog(@"LOADED process=%@ directClasses=YES",NSBundle.mainBundle.bundleIdentifier);
         %init;
     }
 }
