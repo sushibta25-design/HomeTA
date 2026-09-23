@@ -1,18 +1,23 @@
-# HomeTA 0.3.10 — Rootless battery window experiment
+# HomeTA 0.4.0 — Home theme and dock battery
 
-0.3.9 still did not show the sidebar battery on the user's display. The exact cause is unconfirmed.
+Implements a visual interpretation of the user's reference images, not a verified reproduction of an Apple release.
 
-This version removes the context-host search and uses one transparent, non-key, touch-through UIWindow in the existing CarPlay UIWindowScene. Its level is one above the Home source window. The battery position is derived from the native Home content inset; unsupported insets are skipped and logged rather than guessed.
+## Changes
+- Static dark blue curved wallpaper behind the native Home icon hierarchy.
+- Removes the strong cyan icon and label outlines. Uses subtle white icon edges and compact dark translucent label backdrops.
+- Adds a lightly tinted, rounded, touch-through dock overlay. Native dock icons, status text and actions remain owned by the system.
+- Draws battery outline, actual proportional fill and charging bolt directly. Unknown readings show an outline with ? instead of hiding or claiming a full battery.
+- Battery updates use UIDevice notifications, including low-power changes.
+- The display-only window is above ordinary dashboard windows (StatusBar + 1), never key and never receives touches.
+- Allows foreground-inactive scenes, hides when backgrounded, and releases the window on scene disconnect.
+- Defers scene/window installation out of the icon layout hook, with only three bounded readiness retries. No recurring timer, remote-layer search or live blur.
+- Log rotates at 256 KiB; records Home attachment, battery readings, scene state, frame and window level.
 
-- Updates battery data through system notifications, with no polling timer.
-- Reuses the battery window during Home layout and updates its frame when geometry changes.
-- Hides on scene deactivation and releases the window on disconnection.
-- Hides an unknown battery reading instead of displaying a false full battery.
-- Keeps the existing icon, label and page appearance styling.
-- Injects only into com.apple.CarPlayApp; defaults to the rootless Theos scheme.
+## Unverified device behavior
+0.3.10 did not display the battery according to the user. No current runtime log was supplied. Low window level, foreground-active-only visibility, or other scene composition may contribute; none is a confirmed root cause.
 
-The vertical position is still proportional to screen height, not anchored to the native network-status view. Visibility in other apps, sidebar alignment, reconnection and touch passthrough require device testing. A successful build does not establish runtime compatibility.
+This build still locates the sidebar from DBAnimationView's content inset and estimates the vertical battery position as 19% of source window height. The new window cannot guarantee priority over another process's scene. Test both dock sides, native app opening, Home return, reconnect, touch and other overlay tweaks. Wallpaper depends on the native icon containers allowing the inserted background to show. CT belongs to another component and is not removed by HomeTA.
 
-Diagnostics are written to /var/mobile/HomeTA.log: LOADED, CREATED, POSITION and WAIT. If the battery remains invisible, send the log after reconnecting and opening Home. Do not infer remote-layer ownership from screenshots alone.
+CI compilation is not hardware validation. Install the rootless artifact, respring to reload the tweak, reconnect CarPlay, open Home, check battery beneath signal and compare phone battery/charging state. If incomplete, send one screenshot and /var/mobile/HomeTA.log (and .1 when present).
 
-RootHide requires a separately built and tested package.
+RootHide requires a separately built package. Baseline 0.3.4 is retained in Git history for connection-regression comparison.
