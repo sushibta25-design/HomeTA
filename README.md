@@ -1,12 +1,30 @@
-# HomeTA 0.5.6 — reference ribbons and rounded dock
+# HomeTA 0.6.0 — window-level wallpaper (no more old-iOS corners during app open/close)
 
-Custom artwork redrawn from the user's two reference screenshots: broad sweeping blue/purple ribbons with luminous edges. This is not an extracted or verified official iOS 27 wallpaper. CarPlay appearance selects blue (light) or purple (dark).
+Target: rootless (Dopamine), iOS 15-16.x, process com.apple.CarPlayApp. Supersedes 0.5.3, which tried to find and paint over the stock wallpaper VIEW (search failed on this device -- "WALL miss" in the log -- so the old red/blue iOS wallpaper still showed at the screen corners and around the app card while it zoomed open/closed). 0.6.0 instead paints one CALayer sized to the FULL WINDOW that hosts Home, inserted at the very bottom of that window's layer stack ("WALL painted ..." in the log). That window never changes during the open/close animation, so the new wallpaper now stays under everything at every corner, in every state. Removed the old in-Home wallpaper view entirely (was view-only, only covered Home's own bounds, not the full screen -- that partial coverage was the root cause).
 
-Retains the 0.5.5 stationary wallpaper: a direct sublayer of the Home/application window, below native child layers and outside DBAnimationView. Rendering is cached by size, scale and appearance.
+Dock outer corners: NOT changed yet. Added a one-shot, read-only diagnostic -- DOCKTREE ... in the log -- that dumps the dock rail's real view hierarchy inside DBStatusBarHostWindow. Rounding the wrong view broke dock touch once already (0.4.x); this build only looks, so send the log after connecting and the next build will target the exact backdrop view by class name.
 
-The existing DBStatusBarHostWindow receives a matching translucent gradient behind its contents and a rounded visual mask restricted to the dock strip. The rest of the window remains visible. Existing system/third-party masks are respected, not replaced. No new window or touch view is created; native buttons and their positions remain unchanged. Decorative layers do not hit-test. Scene disconnect removes owned styling.
+## Dock touch
+- Every layer HomeTA adds (dock battery, Home wallpaper, icon glass rim) is marked non-hit-testable
+  via private `CALayer.allowsHitTesting=NO` (guarded by respondsToSelector), so the render server
+  cannot route a touch to them.
+- Battery layer zPosition lowered from 10000 to 100.
+- Home attach now skips any icon inside a view whose class contains `Dock`/`StatusBar`, and only
+  accepts a `DBAnimationView` at least half the window width, so nothing is ever inserted into a dock container.
+- One-shot diagnostics 3 s after CarPlay connects: `PROBE dock ...` (which view UIKit hit-tests at 4 points
+  down the dock) and `WINDOW ...` (every window in the scene). A leftover 0.4.0 overlay window shows up here.
 
-## Device checks
-Install rootless DEB, respring, reconnect. Check rounded dock, blue/purple theme, shortcuts/Home button and edge touches. Open/close apps repeatedly and inspect the stationary background. Check split-screen and reconnect. Look for WALL FIXED and DOCK rounded in HomeTA.log.
+## Look (reference: iOS 27 CarPlay coverage, Sept 2026)
+- Wallpaper: layered sweeping curves with soft shadows, inspired by the iOS 27 "Celosia" wallpaper; light/dark variants follow the CarPlay appearance.
+- Battery: iOS 27 borderless style — translucent track, no outline, solid fill; percentage punched out of the white fill;
+  green + bolt when charging, green when full, red at <=20 %, yellow in Low Power Mode.
+- Icons: continuous-corner squircle (22.5 %) with a Liquid Glass-style gradient rim instead of a flat border.
+- Labels: dark pill removed, plain label with soft shadow.
+This is an approximation drawn on iOS 16; Apple's own assets/material are not reproduced.
 
-Native dock surfaces can obscure the gradient depending on the OS/compositor. Native opaque surfaces may also cover the fixed wallpaper. Build success is not device visual verification. Send a screenshot and log if the old rectangular dock or wallpaper remains.
+## Test
+Install DEB, **respring** (mandatory, clears any 0.4.x state), reconnect CarPlay, wait 5 s.
+Check: 3 dock shortcuts, Home/dashboard button, page swipes, battery states, app return, reconnect.
+If the dock still ignores touches, send `/var/mobile/HomeTA.log` (the PROBE/WINDOW/DOCK lines) + a photo.
+
+No new window, view hit target, recurring timer, global hook, touch forwarding or SpringBoard injection.

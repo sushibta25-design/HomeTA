@@ -1,17 +1,16 @@
-// HomeTA 0.5.6 — based on 0.5.3; custom wallpaper pinned to the source window.
-// The wallpaper is outside the Home/app animation and snapshot subtrees.
+// HomeTA 0.6.0 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 
 @interface SBIconImageView : UIImageView @end
 @interface DBIconLabelBackdropView : UIView @end
-@interface DBAnimationView : UIView @end
 @interface CALayer (HTPrivate)
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.5.6"
+#define HT_VERSION @"0.6.0"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -44,54 +43,61 @@ static NSString *HTChain(UIView *v) {
     return parts.count ? [parts componentsJoinedByString:@" < "] : @"nil";
 }
 
-#pragma mark - Custom ribbon wallpaper, redrawn from the supplied reference
+#pragma mark - Wallpaper (iOS 27 "Celosia"-inspired layered curves, light/dark)
 
 @interface HTWallpaper : UIView
-@property(nonatomic) NSInteger htStyle;
+@property(nonatomic) NSInteger htStyle; // 0 auto, 1 light, 2 dark (offscreen rendering)
 @end
 @implementation HTWallpaper
+- (void)traitCollectionDidChange:(UITraitCollection *)previous {
+    [super traitCollectionDidChange:previous];
+    if (previous.userInterfaceStyle!=self.traitCollection.userInterfaceStyle) [self setNeedsDisplay];
+}
 - (void)drawRect:(CGRect)rect {
     CGContextRef c=UIGraphicsGetCurrentContext();
     CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
     if (w<1 || h<1) return;
     BOOL dark=self.htStyle ? self.htStyle==2 : self.traitCollection.userInterfaceStyle!=UIUserInterfaceStyleLight;
+    // base top, base bottom, then 4 layers x (top, bottom)
+    static const uint32_t darkP[]={0x060A20,0x0D1440, 0x121D55,0x0B143C, 0x1C2E7E,0x121F58, 0x2B45AA,0x1C2F7C, 0x5271D6,0x3450AE};
+    static const uint32_t lightP[]={0xEAF0FF,0xD3DEFF, 0xC4D3FF,0xAFC3FA, 0xA0B8FA,0x88A3F0, 0x7D99EE,0x6684E0, 0x5D7CDF,0x4867CC};
+    const uint32_t *p=dark ? darkP : lightP;
     CGColorSpaceRef space=CGColorSpaceCreateDeviceRGB();
-    CGFloat stops[]={0,0.48,1};
-    NSArray *base=dark ? @[(id)HTRGB(0x080515,1).CGColor,(id)HTRGB(0x16102D,1).CGColor,(id)HTRGB(0x352654,1).CGColor]
-                        : @[(id)HTRGB(0x0B174C,1).CGColor,(id)HTRGB(0x243991,1).CGColor,(id)HTRGB(0x546DD5,1).CGColor];
-    CGGradientRef g=CGGradientCreateWithColors(space,(__bridge CFArrayRef)base,stops);
-    CGContextDrawLinearGradient(c,g,CGPointZero,CGPointMake(w,h),0); CGGradientRelease(g);
-    // Wide overlapping ribbons rise towards the right. The previous narrow
-    // vertical stripes are intentionally replaced, not just recolored.
-    for (NSInteger i=0;i<3;i++) {
-        CGFloat d=i*0.24;
+    CGFloat loc[]={0,1};
+
+    CGGradientRef base=CGGradientCreateWithColors(space,(__bridge CFArrayRef)@[(id)HTRGB(p[0],1).CGColor,(id)HTRGB(p[1],1).CGColor],loc);
+    CGContextDrawLinearGradient(c,base,CGPointMake(0,0),CGPointMake(w*0.3,h),kCGGradientDrawsBeforeStartLocation|kCGGradientDrawsAfterEndLocation);
+    CGGradientRelease(base);
+
+    for (NSUInteger i=0;i<4;i++) {
+        CGFloat x0=w*(0.06+0.19*i), x1=w*(0.46+0.15*i);
         UIBezierPath *edge=[UIBezierPath bezierPath];
-        [edge moveToPoint:CGPointMake((-0.18+d)*w,1.12*h)];
-        [edge addCurveToPoint:CGPointMake((0.30+d)*w,0.57*h)
-            controlPoint1:CGPointMake((-0.23+d)*w,0.83*h)
-            controlPoint2:CGPointMake((0.08+d)*w,0.73*h)];
-        [edge addCurveToPoint:CGPointMake((0.49+d)*w,-0.10*h)
-            controlPoint1:CGPointMake((0.91+d*0.30)*w,0.22*h)
-            controlPoint2:CGPointMake((0.91+d*0.20)*w,-0.03*h)];
+        [edge moveToPoint:CGPointMake(x0,h+2)];
+        [edge addCurveToPoint:CGPointMake(x1,-2)
+                controlPoint1:CGPointMake(x0+w*0.32,h*0.66)
+                controlPoint2:CGPointMake(x1-w*0.30,h*0.38)];
         UIBezierPath *region=[edge copy];
-        [region addLineToPoint:CGPointMake(-w,-h)];
-        [region addLineToPoint:CGPointMake(-w,1.12*h)]; [region closePath];
+        [region addLineToPoint:CGPointMake(w+2,-2)];
+        [region addLineToPoint:CGPointMake(w+2,h+2)];
+        [region closePath];
+
+        // Soft shadow cast back onto the previous layer ("folded paper" depth).
         CGContextSaveGState(c);
-        CGContextSetShadowWithColor(c,CGSizeMake(w*0.008,h*0.025),h*0.045,HTRGB(0x02020E,0.85).CGColor);
-        [HTRGB(dark?0x221636:0x284798,1) setFill]; [region fill];
+        CGContextSetShadowWithColor(c,CGSizeMake(-w*0.006,0),h*0.09,[UIColor colorWithWhite:0 alpha:dark?0.55:0.20].CGColor);
+        [HTRGB(p[3+2*i],1) setFill];
+        [region fill];
         CGContextRestoreGState(c);
-        CGContextSaveGState(c); [region addClip];
-        NSArray *colors=dark ? @[(id)HTRGB(0x0C071B,1).CGColor,(id)HTRGB(0x35244F,1).CGColor,(id)HTRGB(0x8172A7,1).CGColor]
-                            : @[(id)HTRGB(0x101944,1).CGColor,(id)HTRGB(0x3552B9,1).CGColor,(id)HTRGB(0x97B9F7,1).CGColor];
-        g=CGGradientCreateWithColors(space,(__bridge CFArrayRef)colors,stops);
-        CGContextDrawLinearGradient(c,g,CGPointMake(w*0.42,-h*0.1),CGPointMake(w*0.62,h*1.1),kCGGradientDrawsBeforeStartLocation|kCGGradientDrawsAfterEndLocation);
+
+        CGContextSaveGState(c);
+        [region addClip];
+        CGGradientRef g=CGGradientCreateWithColors(space,(__bridge CFArrayRef)@[(id)HTRGB(p[2+2*i],1).CGColor,(id)HTRGB(p[3+2*i],1).CGColor],loc);
+        CGContextDrawLinearGradient(c,g,CGPointMake(x1,0),CGPointMake(x0,h),0);
         CGGradientRelease(g);
-        NSArray *glow=@[(id)HTRGB(dark?0xAC92DF:0x76B9FF,0.32).CGColor,(id)HTRGB(dark?0xAC92DF:0x76B9FF,0).CGColor];
-        g=CGGradientCreateWithColors(space,(__bridge CFArrayRef)glow,NULL);
-        CGContextDrawRadialGradient(c,g,CGPointMake((0.28+d)*w,h*0.65),0,CGPointMake((0.28+d)*w,h*0.65),w*0.42,0);
-        CGGradientRelease(g); CGContextRestoreGState(c);
-        edge.lineWidth=MAX(0.6,h/360.0);
-        [HTRGB(dark?0xCEB7ED:0xC7E5FF,0.75) setStroke]; [edge stroke];
+        CGContextRestoreGState(c);
+
+        edge.lineWidth=1;
+        [[UIColor colorWithWhite:1 alpha:dark?0.10:0.35] setStroke];
+        [edge stroke];
     }
     CGColorSpaceRelease(space);
 }
@@ -279,8 +285,11 @@ static void HTReleaseBatteryLayer(void) {
     HTRenderedSize=CGSizeZero; HTRenderedScale=0;
 }
 
-#pragma mark - Fixed wallpaper outside the animated Home subtree
-
+#pragma mark - Window-level wallpaper (survives app-open/close zoom animation)
+// Painting the wallpaper only inside the Home content view left the stock iOS wallpaper visible
+// around the zooming app card and at the screen corners during open/close. It is now a CALayer
+// on the SAME WINDOW that hosts Home (HTSource), sized to the FULL WINDOW bounds and kept at the
+// bottom of that window's layer stack, so it stays the backdrop through the whole animation.
 static CALayer *HTWallLayer;
 static __weak UIWindow *HTWallWindow;
 static HTWallpaper *HTWallPainter;
@@ -288,47 +297,30 @@ static CGSize HTWallSize;
 static CGFloat HTWallScale;
 static NSInteger HTWallStyle;
 
-static void HTReleaseWallpaper(void) {
-    [HTWallLayer removeFromSuperlayer];
-    HTWallLayer=nil; HTWallWindow=nil; HTWallPainter=nil;
-    HTWallSize=CGSizeZero; HTWallScale=0; HTWallStyle=0;
-}
-
-static void HTUpdateFixedWallpaper(void) {
+static void HTUpdateWindowWallpaper(void) {
     UIWindow *window=HTSource;
-    if (!window || !HTHome || HTHome.window!=window || CGRectIsEmpty(window.bounds)) return;
-    BOOL created=HTWallWindow!=window || !HTWallLayer;
-    if (created) {
-        HTReleaseWallpaper();
-        HTWallWindow=window;
+    if (!window || CGRectIsEmpty(window.bounds)) return;
+    BOOL created=NO;
+    if (!HTWallLayer || HTWallWindow!=window) {
+        [HTWallLayer removeFromSuperlayer];
         HTWallLayer=[CALayer layer];
-        HTWallLayer.name=@"HomeTA.FixedWallpaper";
+        HTWallLayer.name=@"HomeTA.Wallpaper";
         HTWallLayer.contentsGravity=kCAGravityResize;
-        HTWallLayer.opaque=YES;
-        HTWallLayer.masksToBounds=YES;
-        HTWallLayer.actions=@{@"contents":NSNull.null,@"position":NSNull.null,
-            @"bounds":NSNull.null,@"transform":NSNull.null,@"opacity":NSNull.null,
-            @"hidden":NSNull.null,@"zPosition":NSNull.null};
+        HTWallLayer.actions=@{@"contents":NSNull.null,@"position":NSNull.null,@"bounds":NSNull.null,@"hidden":NSNull.null};
         HTNoHit(HTWallLayer);
+        [window.layer insertSublayer:HTWallLayer atIndex:0];
+        HTWallWindow=window;
         HTWallPainter=[HTWallpaper new];
+        HTWallSize=CGSizeZero; created=YES;
     }
-    // A direct source-window sublayer: above the stock background window,
-    // below BOTH the remote app host and Home container. Never put the
-    // wallpaper in DBAnimationView or its parent (which may also animate).
-    CALayer *parent=window.layer;
-    CGFloat bottomZ=0;
-    for (CALayer *child in parent.sublayers)
-        if (child!=HTWallLayer) bottomZ=MIN(bottomZ,child.zPosition);
     CGSize size=window.bounds.size;
     CGFloat scale=MAX(1,window.screen.scale);
     NSInteger style=window.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
-    if (HTWallLayer.superlayer!=parent || parent.sublayers.firstObject!=HTWallLayer)
-        [parent insertSublayer:HTWallLayer atIndex:0];
-    HTWallLayer.zPosition=bottomZ-1;
-    HTWallLayer.transform=CATransform3DIdentity;
-    HTWallLayer.opacity=1;
-    HTWallLayer.hidden=NO;
+    if (window.layer.sublayers.firstObject!=HTWallLayer) {
+        [HTWallLayer removeFromSuperlayer];
+        [window.layer insertSublayer:HTWallLayer atIndex:0];
+    }
     HTWallLayer.frame=window.bounds;
     if (!CGSizeEqualToSize(size,HTWallSize) || scale!=HTWallScale || style!=HTWallStyle || !HTWallLayer.contents) {
         HTWallPainter.htStyle=style;
@@ -340,67 +332,24 @@ static void HTUpdateFixedWallpaper(void) {
         HTWallLayer.contentsScale=scale;
         HTWallLayer.contents=(__bridge id)image.CGImage;
         HTWallSize=size; HTWallScale=scale; HTWallStyle=style;
-        HTLog([NSString stringWithFormat:@"WALL FIXED sourceLevel=%.0f bounds=%@ style=%ld created=%d outsideHome=1 contents=%d",
-            window.windowLevel,NSStringFromCGRect(window.bounds),(long)style,created,HTWallLayer.contents!=nil]);
+        HTLog([NSString stringWithFormat:@"WALL painted window=%p size=%@ style=%ld created=%d",(void*)window,NSStringFromCGSize(size),(long)style,created]);
     }
     [CATransaction commit];
 }
 
-#pragma mark - Rounded native dock, matched to wallpaper palette
-static __weak UIWindow *HTStyledDock;
-static CAGradientLayer *HTDockGlass;
-static CAShapeLayer *HTDockMask;
-
-static void HTReleaseDockStyle(void) {
-    if (HTStyledDock.layer.mask==HTDockMask) HTStyledDock.layer.mask=nil;
-    [HTDockGlass removeFromSuperlayer];
-    HTStyledDock=nil; HTDockGlass=nil; HTDockMask=nil;
-}
-
-static void HTStyleDock(UIWindow *host, UIWindow *source, CGRect dock) {
-    if (!host || host==source) return;
-    if (HTStyledDock!=host) {
-        HTReleaseDockStyle(); HTStyledDock=host;
-        HTDockGlass=[CAGradientLayer layer];
-        HTDockGlass.name=@"HomeTA.DockGlass";
-        HTDockGlass.startPoint=CGPointMake(0,0); HTDockGlass.endPoint=CGPointMake(1,1);
-        HTDockGlass.borderWidth=0.65;
-        HTDockGlass.borderColor=[UIColor colorWithWhite:1 alpha:0.22].CGColor;
-        HTDockGlass.actions=@{@"bounds":NSNull.null,@"position":NSNull.null,@"colors":NSNull.null};
-        HTNoHit(HTDockGlass);
-        // Respect any mask installed by the system or another tweak.
-        if (!host.layer.mask) {
-            HTDockMask=[CAShapeLayer layer]; HTDockMask.fillColor=UIColor.whiteColor.CGColor;
-            HTDockMask.actions=@{@"path":NSNull.null,@"bounds":NSNull.null,@"position":NSNull.null};
-            HTNoHit(HTDockMask); host.layer.mask=HTDockMask;
-        }
-        HTLog([NSString stringWithFormat:@"DOCK rounded host=%@ maskOwned=%d",NSStringFromClass(host.class),HTDockMask!=nil]);
+#pragma mark - Dock shape diagnostic (read-only — no visual change yet)
+// To round the dock rail's outer corners like iOS 27 without repeating the earlier touch
+// regression, we first need the exact backdrop view inside DBStatusBarHostWindow. This logs its
+// subview tree once so the corner radius can be targeted precisely in the next build.
+static BOOL HTDockTreeLogged=NO;
+static void HTLogDockTreeOnce(UIWindowScene *scene) {
+    if (HTDockTreeLogged) return;
+    for (UIWindow *w in scene.windows) {
+        if (![NSStringFromClass(w.class) isEqualToString:@"DBStatusBarHostWindow"]) continue;
+        HTDockTreeLogged=YES;
+        HTLog([NSString stringWithFormat:@"DOCKTREE %@",HTTree(w,6)]);
+        break;
     }
-    CGRect strip=[host convertRect:dock fromWindow:source];
-    CGFloat inset=MAX(1,strip.size.height/120.0);
-    CGRect capsule=CGRectInset(strip,inset,inset);
-    CGFloat radius=MIN(capsule.size.width*0.44,14.0*strip.size.height/240.0);
-    BOOL dark=source.traitCollection.userInterfaceStyle!=UIUserInterfaceStyleLight;
-    [CATransaction begin]; [CATransaction setDisableActions:YES];
-    if (HTDockGlass.superlayer!=host.layer || host.layer.sublayers.firstObject!=HTDockGlass)
-        [host.layer insertSublayer:HTDockGlass atIndex:0];
-    HTDockGlass.zPosition=-1;
-    HTDockGlass.frame=capsule; HTDockGlass.cornerRadius=radius;
-    HTDockGlass.colors=dark ? @[(id)HTRGB(0x73598C,0.72).CGColor,(id)HTRGB(0x352441,0.86).CGColor]
-                            : @[(id)HTRGB(0x6483D9,0.70).CGColor,(id)HTRGB(0x405CB0,0.85).CGColor];
-    if (HTDockMask && host.layer.mask==HTDockMask) {
-        HTDockMask.frame=host.bounds;
-        // Clip ONLY the dock strip; retain everything outside it, including
-        // native content/status surfaces on the same full-screen window.
-        UIBezierPath *mask=[UIBezierPath bezierPathWithRoundedRect:capsule cornerRadius:radius];
-        CGRect b=host.bounds;
-        CGFloat left=MAX(0,CGRectGetMinX(strip)-CGRectGetMinX(b));
-        CGFloat right=MAX(0,CGRectGetMaxX(b)-CGRectGetMaxX(strip));
-        if (left>0) [mask appendPath:[UIBezierPath bezierPathWithRect:CGRectMake(b.origin.x,b.origin.y,left,b.size.height)]];
-        if (right>0) [mask appendPath:[UIBezierPath bezierPathWithRect:CGRectMake(CGRectGetMaxX(strip),b.origin.y,right,b.size.height)]];
-        HTDockMask.path=mask.CGPath;
-    }
-    [CATransaction commit];
 }
 
 static void HTLayoutBatteryLayer(void) {
@@ -408,7 +357,8 @@ static void HTLayoutBatteryLayer(void) {
     UIView *home=HTHome;
     UIWindowScene *scene=source.windowScene;
     if (!scene) return;
-    HTUpdateFixedWallpaper();
+    HTUpdateWindowWallpaper();
+    HTLogDockTreeOnce(scene);
     CGRect dock; BOOL onLeft=YES;
     if (!HTDockRect(source,home,&dock,&onLeft)) {
         static BOOL reported=NO;
@@ -417,7 +367,6 @@ static void HTLayoutBatteryLayer(void) {
         return;
     }
     UIWindow *host=HTDockWindow(scene);
-    HTStyleDock(host,source,dock);
     CALayer *parent=(host ?: source).layer;
     BOOL created=NO;
     if (!HTBatteryLayer || HTBatteryLayer.superlayer!=parent) {
@@ -490,11 +439,10 @@ static void HTAttachHome(UIView *icon) {
     while (home && !([NSStringFromClass(home.class) isEqualToString:@"DBAnimationView"] &&
                      home.bounds.size.width>=window.bounds.size.width*0.5)) home=home.superview;
     if (!home) return;
+    static BOOL attachLogged=NO;
+    if (!attachLogged) { attachLogged=YES; HTLog([NSString stringWithFormat:@"HOME attached frame=%@ chain=%@",NSStringFromCGRect(home.bounds),HTChain(home)]); }
     BOOL newSource=HTSource!=window || HTHome!=home;
     HTSource=window; HTHome=home;
-    // No wallpaper UIView is inserted into Home. Snapshots/animations of
-    // Home now contain icons and labels only, never our background.
-    HTUpdateFixedWallpaper();
     HTScheduleLayout();
     if (newSource) {
         // Finite readiness retries, not a repeating scene scan or render loop.
@@ -546,28 +494,6 @@ static void HTApplyGlass(UIView *iconView) {
     }
 }
 
-%hook DBAnimationView
-- (void)layoutSubviews {
-    %orig;
-    if (self==HTHome) HTUpdateFixedWallpaper();
-}
-%end
-
-// Only the known source window is affected. Its bounds/appearance define
-// the stationary background, independent of animated Home geometry.
-%hook UIWindow
-- (void)layoutSubviews {
-    %orig;
-    if (self==HTSource) { HTUpdateFixedWallpaper(); HTScheduleLayout(); }
-}
-- (void)traitCollectionDidChange:(UITraitCollection *)previous {
-    %orig;
-    if (self==HTSource && previous.userInterfaceStyle!=self.traitCollection.userInterfaceStyle) {
-        HTUpdateFixedWallpaper(); HTScheduleLayout();
-    }
-}
-%end
-
 %hook SBIconImageView
 - (void)layoutSubviews {
     %orig;
@@ -612,12 +538,10 @@ static void HTApplyGlass(UIView *iconView) {
         }]];
         [HTObservers addObject:[center addObserverForName:UISceneDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){
             if (n.object==HTSource.windowScene || n.object==HTBatteryScene) {
-                HTReleaseDockStyle(); HTReleaseBatteryLayer(); HTReleaseWallpaper(); HTSource=nil; HTHome=nil; HTProbed=nil;
+                HTReleaseBatteryLayer(); HTSource=nil; HTHome=nil; HTProbed=nil;
             }
         }]];
-        HTLog(@"LOADED reference ribbons + rounded dock + fixed window wallpaper; layers hit-test off; no overlay window; no timer");
+        HTLog(@"LOADED iOS27-style Home + borderless battery; layers hit-test off; no overlay window; no timer");
         %init;
     }
 }
-
-
