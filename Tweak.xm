@@ -1,5 +1,7 @@
-// HomeTA 0.9.5 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
-// borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
+// HomeTA 1.0.0 — iOS 27-style CarPlay Home: Celosia-inspired wallpaper (subview inside Home +
+// a welded replacement of the real stock background layer as a backstop), Liquid Glass icon rim,
+// borderless battery, and a touch-safe rounded/tinted dock overlay. Dock hit-testing is never
+// touched directly; a one-shot view-tree dump and touch probe remain as an early-warning canary.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
@@ -10,7 +12,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.9.5"
+#define HT_VERSION @"1.0.0"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -289,66 +291,8 @@ static void HTReleaseBatteryLayer(void) {
     HTRenderedSize=CGSizeZero; HTRenderedScale=0;
 }
 
-#pragma mark - Window-level wallpaper (real UIView, not a bare CALayer)
-// Recovered from the 0.5.4 build (the one photo-confirmed working on this exact unit): the
-// wallpaper was inserted with insertSubview:atIndex: -- an actual UIView -- not insertSublayer:
-// on a bare CALayer. Every later rewrite (0.6.x-0.7.x) used a raw CALayer instead, and never
-// rendered on screen despite identical positioning/z-order logic, on this same device. Restoring
-// the real-UIView approach here; still applied to every negative-level window since the earlier
-// window-swap bug (painting only the currently-hidden buffer) was independently real and correct.
-static char HTWallViewKey;
-
-static void HTPaintWallpaperOnWindow(UIWindow *window) {
-    if (!window || CGRectIsEmpty(window.bounds)) return;
-    HTWallpaper *wall=objc_getAssociatedObject(window,&HTWallViewKey);
-    BOOL created=NO;
-    if (!wall) {
-        wall=[[HTWallpaper alloc] initWithFrame:window.bounds];
-        wall.userInteractionEnabled=NO;
-        wall.opaque=YES;
-        wall.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-        wall.contentMode=UIViewContentModeRedraw;
-        objc_setAssociatedObject(window,&HTWallViewKey,wall,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        created=YES;
-    }
-    if (wall.superview!=window || window.subviews.firstObject!=wall) {
-        [wall removeFromSuperview];
-        [window insertSubview:wall atIndex:0];
-    }
-    if (!CGRectEqualToRect(wall.frame,window.bounds)) wall.frame=window.bounds;
-    NSInteger style=window.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
-    if (wall.htStyle!=style) { wall.htStyle=style; [wall setNeedsDisplay]; }
-    if (created) HTLog([NSString stringWithFormat:@"WALL view attached window=%p level=%.0f hidden=%d bounds=%@ style=%ld",
-        (void*)window,window.windowLevel,window.hidden,NSStringFromCGRect(window.bounds),(long)style]);
-}
-
-static void HTUpdateWindowWallpaper(void) {
-    UIWindowScene *scene=HTSource.windowScene;
-    if (!scene) return;
-    for (UIWindow *w in scene.windows) {
-        if (w.windowLevel<0) HTPaintWallpaperOnWindow(w);
-    }
-}
-
-#pragma mark - One-shot diagnostics (Home layer tree with frames, dock view tree)
-static BOOL HTHomeTreeLogged=NO;
-static NSString *HTLayerTree(CALayer *l, NSUInteger depth) {
-    NSMutableString *out=[NSMutableString stringWithFormat:@"%@(z=%.0f,op=%d,a=%.2f,f=%@)",
-        NSStringFromClass(l.class),l.zPosition,l.opaque,l.opacity,NSStringFromCGRect(l.frame)];
-    if (depth && l.sublayers.count) {
-        [out appendString:@"["];
-        NSUInteger i=0;
-        for (CALayer *sub in l.sublayers) { if (i++) [out appendString:@","]; if (i>8) { [out appendString:@"…"]; break; } [out appendString:HTLayerTree(sub,depth-1)]; }
-        [out appendString:@"]"];
-    }
-    return out;
-}
-static void HTLogHomeTreeOnce(UIWindow *window) {
-    if (HTHomeTreeLogged || !window) return;
-    HTHomeTreeLogged=YES;
-    HTLog([NSString stringWithFormat:@"HOMETREE window=%p %@",(void*)window,HTLayerTree(window.layer,7)]);
-}
-
+#pragma mark - One-shot diagnostic (dock view tree -- kept as an early-warning canary; the dock
+// area is the one place a past change broke touch outright, so this stays cheap insurance)
 static NSString *HTTree(UIView *v, NSUInteger depth) {
     NSMutableString *out=[NSMutableString stringWithString:NSStringFromClass(v.class)];
     if (depth && v.subviews.count) {
@@ -481,8 +425,6 @@ static void HTLayoutBatteryLayer(void) {
     UIView *home=HTHome;
     UIWindowScene *scene=source.windowScene;
     if (!scene) return;
-    HTUpdateWindowWallpaper();
-    HTLogHomeTreeOnce(source);
     HTLogDockTreeOnce(scene);
     CGRect dock; BOOL onLeft=YES;
     if (!HTDockRect(source,home,&dock,&onLeft)) {

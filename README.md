@@ -1,89 +1,84 @@
-# HomeTA 0.9.5 -- dock tint wash increased from 22% to 42%
+# HomeTA 1.0.0 — iOS 27-style CarPlay Home
 
-0.9.5: dock inner tint alpha raised from 0.22 to 0.42 per request, for a more faded/washed look closer to the lighter reference photo. Nothing else changed.
+Target: rootless (Dopamine), iOS 15–16.x, process `com.apple.CarPlayApp`.
 
-0.9.4: a photo grabbed mid-transition showed three colors braided together at the screen edges -- the app's own color, our fake wallpaper, and a third, more saturated red/magenta/blue that matches neither -- confirming a real stock layer still exists underneath and surfaces very briefly during the open/close animation, faster than the earlier frame-by-frame video check could catch.
+First stable milestone after an extended round of trial-and-error (~40 builds) to find techniques
+that actually render on this specific head unit/connection, without ever touching the dock's real
+hit-testing. This file describes the final, working design — not the history of what didn't work.
 
-Added a second, independent wallpaper mechanism: find the exact real stock-background layer inside Home (same signature as before -- a leaf, opaque layer sized to Home's full bounds while sibling page layers are 16pt shorter), hide it, and weld our own painted layer directly into its place in the layer stack. This was tried once before (0.7.6/0.7.7) and looked like it failed, but that test ran alongside the window-level wallpaper attempt that we now know never rendered on this unit at all -- since content genuinely inside Home is now proven to render (the subview wallpaper), this deserves a clean retry on its own. Runs alongside the existing subview wallpaper as a backstop, not a replacement for it, and re-asserts the hide every layout pass in case the system ever un-hides its own layer again.
+## What it does
 
-Look for a 'WELD replaced' line in the log. If the three-color flash still happens, please try to grab another photo the same way (mid-transition, from a video) so we can see whether the leak got smaller or is unchanged.
-0.9.3: video review of 0.9.2 found no red-corner leak in either the app-open or the return-to-Home transition -- the DBAnimationView hook from 0.9.1 appears to have worked. Still waiting on the exact moment the user is seeing it, if any remains.
+- **Wallpaper**: a custom "Celosia"-style layered-curve background (own drawing, not an Apple
+  asset), replacing the stock CarPlay wallpaper on the Home screen.
+- **Icons**: continuous-corner squircle shape with a Liquid Glass-style gradient rim instead of a
+  flat border; labels are plain white text with a soft shadow instead of a dark pill.
+- **Battery**: borderless pill in the dock — translucent track, solid fill, no outline. Green when
+  charging or full, red at ≤20%, yellow in Low Power Mode, plain white otherwise. Uses the real
+  `UIDevice` battery API; the visual design is entirely custom.
+- **Dock**: the real dock content and its tap targets are never touched. A separate overlay layer
+  sits on top with a rounded hole cut out (3pt margin, 12pt radius) so the real content shows
+  through; the margin itself is cropped live from the actual wallpaper bitmap so it blends in
+  rather than reading as a mismatched box. A light 42%-alpha wash of the same crop is also laid
+  over the visible inner area, tinting the dock toward the wallpaper's color without hiding the
+  real icons/clock underneath.
 
-Dock inset bumped from 2pt to 3pt and radius from 10 to 12 (2pt proved safe for the clock in the video, so a little more room). Added a light wallpaper-colored tint wash (22% alpha) over the dock's inner content area, on top of the real icons/clock rather than replacing them -- the actual dock background color is rendered by a separate process (per DOCKTREE) and isn't something this tweak can set directly, only paint over additively, so this is a tint approximation of 'colored like the Home wallpaper', not a true blur/material match.
-0.9.2: fixed a Logos build error in the DBAnimationView hook (self.bounds/.window needs an explicit UIView cast when the class is only forward-declared -- unrelated to any of the wallpaper logic, which is unchanged from 0.9.1).
+## How the wallpaper actually gets on screen (two layers, deliberately redundant)
 
-Also retried the floating-card dock inset, at 2pt instead of 0.7.4's 6pt -- the earlier cropped clock digit was a real clipping problem (the margin covered part of the glyph), not a color mismatch, so this could still clip at 2pt; it's untested. The margin itself is now cropped from the real rendered wallpaper (not a flat-color guess) either way. Check closely whether the clock's leading digit is intact this time.
-0.9.1: 0.9.0 is confirmed working (photo + HOMEWALL log line) -- inserting the wallpaper as a real UIView directly into DBAnimationView (Home's own content view) is what renders on this unit. The window-level insertion (level -2/-1, since 0.6.0) still doesn't render here; that part of the earlier 'render limitation' theory was simply wrong about WHERE, not about everything -- the dock's own window (battery, dock mask) was never affected and still works exactly as before.
+1. **Subview inside Home** — an `HTWallpaper` `UIView` is inserted with `insertSubview:atIndex:0`
+   directly into `DBAnimationView` (Home's own content view). This is the technique that is
+   confirmed working, via a recovered old build's disassembled strings and a live photo/log match:
+   inserting a bare `CALayer` into anything (this view, or the window) does not render on this
+   unit; a real `UIView` inserted into Home's own view tree does.
+2. **Welded replacement** — a second pass walks Home's layer tree looking for the real stock
+   background layer (identified by a size signature: a leaf layer, opaque, sized to Home's exact
+   bounds, while sibling "page" layers are all 16pt shorter) and hides it, inserting a second
+   painted layer directly in its place. This runs as a backstop under layer 1, re-asserting the
+   hide every layout pass in case the system ever un-hides its own layer again.
 
-For the corner-flash during app open/close: DBAnimationView is likely a freshly-created instance each time you return to Home, and the wallpaper previously only got (re)attached once a child icon's own layoutSubviews fired -- a small window where the new page has no wallpaper yet, plausibly exactly when the zoom animation runs. 0.9.1 hooks DBAnimationView itself and attaches the wallpaper the instant IT lays out, without waiting on a child icon, narrowing that gap.
+Both are attached from two places: `SBIconImageView.layoutSubviews` (existing icons) and
+`DBAnimationView.layoutSubviews` directly (so a freshly recreated Home page gets the wallpaper
+immediately, without waiting on a child icon to also lay out — this narrows, but does not
+provably eliminate, a very brief stock-color flash some testing caught mid-transition during app
+open/close).
 
-Not guaranteed to fully fix the corner flash -- please record a short video of opening and closing an app after this build (not just a still photo) plus the log from that session. If flashing remains, the log's timing of repeated 'HOMEWALL view attached' lines during that video will show whether Home is really being recreated on every open/close, which decides the next fix.
-0.9.0: this session's own 0.5.3 log line showed 'WALL miss' (its window-level search failed, same as every later attempt) yet its tree dump still showed 'DBAnimationView{HTWallpaper,...}' -- an even OLDER technique (0.5.0-0.5.2) that inserted the wallpaper UIView directly into the Home content view itself, not the window. That's a genuinely different, untested variable: 0.5.4 (photo-confirmed working) and 0.8.1 (just failed) both insert into the WINDOW; this reinstates inserting into HOME instead, as its own attempt, in addition to the window-level one already there (both run; whichever one the device actually renders should now show up).
+## Known remaining limitation
 
-Look for 'HOMEWALL view attached' in the log after this test -- if the wallpaper still doesn't show even with both the window-level AND the home-level UIView in place, that rules out both known insertion points and the next step is comparing this build's dylib strings against the photo-confirmed 0.5.4 one line by line instead of guessing further.
-0.8.1: while removing the old page-background hack, a block delete also took out HTUpdateWindowWallpaper, HTLogHomeTreeOnce/HTLayerTree, HTLogDockTreeOnce/HTTree, and HTUpdateDockRoundedMask with it -- all still called elsewhere, so the build failed with four 'use of undeclared identifier' errors. All five re-added, unchanged from their last working content. No logic changes from 0.8.0's actual wallpaper fix (the real UIView via insertSubview:).
+A very brief three-way color blend (app color / fake wallpaper / real stock color) was caught in a
+single photo pulled from a video during an app-open/close transition. Extensive frame-by-frame
+video review otherwise found no visible leak. The likely cause is a system-level transition
+snapshot taken before this tweak's hooks run, which is a different mechanism from anything above
+and was not tracked down. Steady-state Home (not mid-transition) and the actual app screens
+themselves are unaffected.
 
-0.8.0: the user found and sent back the old 0.5.4 .deb, which a photo confirmed WAS showing the custom wallpaper on this exact unit. Extracting strings from its compiled dylib (no source was recoverable, only the binary) showed it called insertSubview:atIndex: -- an actual UIView -- while every rewrite since 0.6.0 used insertSublayer: on a bare CALayer instead. That is very likely why nothing in the 0.6.x/0.7.x line ever rendered on this device's Home window despite the position/z-order logic looking correct: a real UIView participates in the window's normal view-management bookkeeping in a way a manually inserted CALayer apparently does not for whatever renders this unit's CarPlay screen.
+## Explicitly out of scope for this build
 
-0.8.0 restores the wallpaper as an actual HTWallpaper UIView, inserted with insertSubview:atIndex:0, kept on every negative-level window (the window-swap double-buffer issue found independently in 0.6.3 was real and still applies, so this isn't a straight revert to 0.5.4 -- it keeps that fix on top of the recovered technique). Removed the page-background hide/replace experiment from 0.7.6/0.7.7 entirely; it never worked and added risk for no benefit once the real cause was found. The dock's rounded-corner patches now render a fresh temporary wallpaper bitmap to crop from, since the real wallpaper is a view with its own drawRect: rather than a single cached bitmap layer.
+- Adding a custom wallpaper as a real, selectable entry in Settings → CarPlay → Wallpaper. This
+  would mean hooking into Apple's private wallpaper-picker data source and persistence, which is a
+  different kind of project from painting over the rendered result — no investigation has been
+  done here yet.
+- Reshaping the dock into a fully floating, inset-on-all-sides card (as opposed to the current
+  rounded-hole overlay). The real dock content and its tap targets are one and the same view; a
+  true reshape was judged too high-risk given an earlier build broke dock touch entirely.
+- A real Do Not Disturb While Driving indicator. Testing found no such indicator appears on this
+  unit's CarPlay at all when the Focus is enabled on the phone, suggesting the phone's iOS version
+  does not render one here (independent of this tweak). No reliable API to read that Focus state
+  from within this process has been confirmed either.
 
-This should be the one that finally shows the wallpaper. If it still doesn't, that would mean something changed on the device between the 0.5.4 test and now (iOS update, connection mode, etc.), not that this technique is wrong -- it's a verified, photo-confirmed working method on this specific unit.
-0.7.7: 0.7.6's PAGEBG line confirmed the right layer was found and hidden, yet the photo still showed the stock wallpaper completely unchanged. Likely cause: the original hide was a one-time action, guarded by a marker that then skipped ever looking at that layer again -- if the system (which owns that layer, not us) later reset its own hidden flag back to NO on some subsequent refresh, our code would never notice, since it had already stopped watching.
+## Build
 
-Now every (original, replacement) pair is kept in a live map, and every single layout pass re-asserts hidden=YES on the original and re-syncs the replacement's frame, instead of patching once and walking away. If the system keeps re-enabling it, the log will now show repeated 'PAGEBG re-hidden (system had un-hidden it)' lines, which is itself useful information -- send the log either way, that line's presence or absence tells us something new about what's actually happening on this unit.
-0.7.6: with frames now in HOMETREE, found the actual layer painting the stock red/blue wallpaper -- a leaf layer, opaque, sized exactly to Home's own bounds (381.67x240), while its four sibling page layers are all 16pt shorter (224, the page-dot strip carved out). Every previous wallpaper attempt added a backdrop BEHIND this layer, which this real layer simply kept painting over. 0.7.6 instead finds that exact layer (by that size signature, walking Home's own layer tree each layout pass so it also catches a page's background the first time you swipe to it) and hides it, inserting our own painted wallpaper layer in its place at the same position in the layer stack.
+GitHub Actions (`.github/workflows/build.yml`) builds `HomeTA-1.0.0-rootless-ios27-style` on Theos
+against the iOS 16.5 SDK for `iphoneos-arm64`. Install the resulting `.deb`, then **respring** —
+this is mandatory; a stale prior build's dylib coexisting with this one has caused confusing,
+inconsistent results in testing before.
 
-The window-level backdrop from 0.6.3 is left in place as a harmless fallback underneath; it was never the problem, it was just always covered.
+## Diagnostics still in the binary
 
-If this still doesn't show the new wallpaper, send the log's PAGEBG line (or its absence) -- that tells us whether the size-matching heuristic actually found the real layer on this specific unit or not, which is different information than anything sent so far.
-0.7.5: the 0.7.4 magenta test confirmed content CAN render above the real dock -- zPosition was the right idea. Reverted the dock mask from a solid magenta test box back to the real design: a rounded hole punched out so the real dock content shows through, corner patches cropped from the actual painted wallpaper bitmap (not a flat-color guess), fixed zPosition (999999, no more runaway feedback with the battery layer's own fixed 1000000).
+- `DOCKTREE` (once per connect): the dock host window's real view-class tree. Kept because the
+  dock is the one place a change has broken touch outright before; if that ever needs debugging
+  again, this saves a round-trip.
+- `PROBE dock` / `WINDOW` (once per connect, ~3s after Home attaches): which view actually
+  receives a touch at several points down the dock, and every window in the scene. Same reasoning.
+- `WELD replaced` / `HOMEWALL view attached` / `DOCKMASK`: one-line confirmations that each part of
+  the wallpaper/dock system found what it expected and painted.
 
-The wallpaper itself (the full-screen stock red/blue background) is UNRELATED to this fix and still needs its own diagnosis -- that needs the frame-enhanced HOMETREE log from 0.7.4/0.7.5 plus a photo, which hasn't come back with a positive/negative confirmation yet. Send both after this test.
-0.7.4 is a diagnostic round, not a finished look. Two real things it fixes outright: (1) the dock mask and the battery layer were each computing their zPosition from their siblings, which included EACH OTHER -- every layout pass each one saw the other's new higher value and climbed past it, producing the endlessly increasing zPosition seen in the previous log (10000, 10002, 10004...). Both now use fixed constants instead. (2) HOMETREE now also logs each layer's frame, not just its class/z/opacity, which the previous dump lacked -- needed to identify which real layer is actually painting the stock background by its size.
-
-The dock mask is TEMPORARILY a solid, obviously-wrong magenta rectangle covering the entire dock strip, no rounded hole. This isn't the design -- it's a yes/no test. If the dock rail shows ANY magenta after this build, local content can be drawn on top of the real dock there, and the rounded-corner design goes back in next round. If the dock still looks completely untouched (no magenta anywhere), that means the zPosition theory was wrong and the real content in that window is composited by something that doesn't respect local layer order at all -- a different, harder problem that changes what's worth trying next.
-
-Send both the log (HOMETREE and DOCKMASK lines matter most) and a photo. If the dock is magenta, that's expected and correct for this build -- not a new bug to report.
-0.7.3: the log showed everything succeeding (WALL painted, DOCKMASK patchedFromWallpaper=1) yet the photo showed zero visible change anywhere -- except the battery, which DOES show our custom borderless style. The difference: the battery layer explicitly forces its zPosition above every sibling; the dock mask and the wallpaper layer never set one, so even though addSublayer appends them last (array order), a sibling with an explicit higher zPosition (apparently the real dock/content layers) still draws in front regardless of array position. Fixed for the dock mask the same way as the battery (force top zPosition) -- safe here because the punched-out hole is genuinely transparent and can never cover real dock icons no matter its zPosition.
-
-The wallpaper layer can't get the same blind fix: forcing it to the top would cover the real icons and labels, not just an empty margin. Added a one-shot HOMETREE log line instead, dumping the real content layer tree (class, zPosition, opaque, opacity) of the actual window Home lives in, so the next build can insert the wallpaper just above whatever is genuinely painting the stock background instead of guessing. Send the log after this test -- the HOMETREE line is the one that matters most this round.
-0.7.2: the two rounded outer-corner patches on the dock were previously filled with a guessed flat navy/light color, which visibly clashed with the actual wallpaper next to it. They are now cropped directly out of the SAME bitmap already painted for the real Home wallpaper (pixel-for-pixel, same window bounds), so the patch is the actual background, not an approximation. Falls back to the old flat color only if the wallpaper bitmap isn't ready yet.
-
-IMPORTANT -- the log from this round showed FOUR different HomeTA versions loading within five minutes (0.5.6, 0.5.5, 0.4.1, then 0.7.1), which is almost certainly why the wallpaper appeared completely stock in one of the photos: 0.4.1 has no wallpaper code at all. Before testing 0.7.2, uninstall HomeTA completely (Sileo/Zebra -> Installed -> HomeTA -> Remove), respring, then install ONLY this .deb, respring again. Testing with more than one version's dylib present makes every other result in this log impossible to trust.
-0.7.0: adds the iOS 27-style floating rounded dock card (small gap off the top/bottom/outer screen edge, rounded corners), requested after the Porsche reference photo. Built as an ADDITIVE overlay only: a solid-color frame is painted on top of the real dock, with a rounded rect punched transparent in the middle so the real content shows through the hole. The real dock view (_UITouchPassthroughView per DOCKTREE) keeps its exact original frame and tap targets -- nothing about its size, position, or hit-testing changes. This is deliberately a different technique from whatever the earlier 0.5.6 experiment used to break dock touch; that approach is not reused here.
-
-Gaps used: 6pt top, 6pt bottom, 6pt on the outer (screen-edge) side, 0pt on the inner side (stays flush against the app icons), corner radius up to 18pt. Frame color is a flat dark-navy or light tone matching the wallpaper's base shade (not a live sample of the actual wallpaper pixels, which sit in a different window) -- close, but check for an obvious seam against the wallpaper in test 5 below.
-
-TEST THIS ONE PARKED FIRST. After respring: (1) do all 3 dock icons plus Home/Dashboard buttons and page-swipe still register touches, right up to their visual edge including in the new gap area (they should -- the tap zone hasn't moved, only the paint on top of it has), (2) does the rounded frame look intentional or does it look like a colored box slapped over the dock, (3) do the corners look uniformly rounded in both light and dark CarPlay appearance, (4) reconnect a few times to make sure the mask reappears correctly, (5) compare the frame color against the new wallpaper right next to it for an obvious seam. If ANY touch stops responding, that alone means this technique also does not hold up despite the different approach -- roll back to 0.6.3 immediately and send the log's DOCKMASK lines plus a video.
-0.6.2: normal (non-charging, non-critical, non-low-power) battery digits used a destination-out blend to punch the number through the white fill, revealing a transparent hole. Because the layer bitmap is non-opaque, the fill/track boundary crossing a glyph stroke produced two misaligned halves of that stroke, which read as a doubled or ghosted outline (matches the reported look). Replaced with two plain, non-blended fills (dark ink over the filled part, white ink over the empty part) split by the same clip boundary -- same visual intent, no compositing seam. Log confirms 0.6.1 loaded cleanly with no duplicate instance, so the earlier "mat giao dien iOS 27" report is more likely the CarPlay Dashboard screen (a separate screen from Home that HomeTA does not touch) than a regression -- send a photo of exactly which screen looked wrong to confirm.
-
-0.6.1: 0.6.0 failed to build (HTTree undeclared) because the tree-dump helper was accidentally deleted while removing the old wallpaper-search code, but the new dock diagnostic still called it. Re-added HTTree; no other logic changed from 0.6.0.
-
-Target: rootless (Dopamine), iOS 15-16.x, process com.apple.CarPlayApp. Supersedes 0.5.3, which tried to find and paint over the stock wallpaper VIEW (search failed on this device -- "WALL miss" in the log -- so the old red/blue iOS wallpaper still showed at the screen corners and around the app card while it zoomed open/closed). 0.6.0 instead paints one CALayer sized to the FULL WINDOW that hosts Home, inserted at the very bottom of that window's layer stack ("WALL painted ..." in the log). That window never changes during the open/close animation, so the new wallpaper now stays under everything at every corner, in every state. Removed the old in-Home wallpaper view entirely (was view-only, only covered Home's own bounds, not the full screen -- that partial coverage was the root cause).
-
-Dock outer corners: NOT changed yet. Added a one-shot, read-only diagnostic -- DOCKTREE ... in the log -- that dumps the dock rail's real view hierarchy inside DBStatusBarHostWindow. Rounding the wrong view broke dock touch once already (0.4.x); this build only looks, so send the log after connecting and the next build will target the exact backdrop view by class name.
-
-## Dock touch
-- Every layer HomeTA adds (dock battery, Home wallpaper, icon glass rim) is marked non-hit-testable
-  via private `CALayer.allowsHitTesting=NO` (guarded by respondsToSelector), so the render server
-  cannot route a touch to them.
-- Battery layer zPosition lowered from 10000 to 100.
-- Home attach now skips any icon inside a view whose class contains `Dock`/`StatusBar`, and only
-  accepts a `DBAnimationView` at least half the window width, so nothing is ever inserted into a dock container.
-- One-shot diagnostics 3 s after CarPlay connects: `PROBE dock ...` (which view UIKit hit-tests at 4 points
-  down the dock) and `WINDOW ...` (every window in the scene). A leftover 0.4.0 overlay window shows up here.
-
-## Look (reference: iOS 27 CarPlay coverage, Sept 2026)
-- Wallpaper: layered sweeping curves with soft shadows, inspired by the iOS 27 "Celosia" wallpaper; light/dark variants follow the CarPlay appearance.
-- Battery: iOS 27 borderless style — translucent track, no outline, solid fill; percentage punched out of the white fill;
-  green + bolt when charging, green when full, red at <=20 %, yellow in Low Power Mode.
-- Icons: continuous-corner squircle (22.5 %) with a Liquid Glass-style gradient rim instead of a flat border.
-- Labels: dark pill removed, plain label with soft shadow.
-This is an approximation drawn on iOS 16; Apple's own assets/material are not reproduced.
-
-## Test
-Install DEB, **respring** (mandatory, clears any 0.4.x state), reconnect CarPlay, wait 5 s.
-Check: 3 dock shortcuts, Home/dashboard button, page swipes, battery states, app return, reconnect.
-If the dock still ignores touches, send `/var/mobile/HomeTA.log` (the PROBE/WINDOW/DOCK lines) + a photo.
-
-No new window, view hit target, recurring timer, global hook, touch forwarding or SpringBoard injection.
+Log file: `/var/mobile/HomeTA.log` (auto-rotates past 256 KB).
