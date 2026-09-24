@@ -1,4 +1,4 @@
-// HomeTA 0.6.1 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.6.2 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.6.1"
+#define HT_VERSION @"0.6.2"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -173,11 +173,15 @@ static NSString *HTChain(UIView *v) {
         [text drawAtPoint:at withAttributes:@{NSFontAttributeName:font,NSForegroundColorAttributeName:ink}];
         return;
     }
-    // Normal: digits punched through the white fill, white where they sit over the track.
+    // Normal: dark ink over the white fill, white ink over the empty track — two plain fills,
+    // split by a hard clip. The previous version used a destination-out blend to "punch" the
+    // digits through the fill, but this layer's bitmap has an alpha channel, so the punch left a
+    // truly transparent hole; wherever the fill boundary crossed a glyph stroke, the opaque and
+    // transparent halves of that stroke no longer lined up, reading as a doubled/ghosted outline.
+    UIColor *darkInk=[UIColor colorWithRed:0.04 green:0.10 blue:0.28 alpha:0.92];
     CGContextSaveGState(c);
     CGContextClipToRect(c,fillRect);
-    CGContextSetBlendMode(c,kCGBlendModeDestinationOut);
-    [text drawAtPoint:at withAttributes:@{NSFontAttributeName:font,NSForegroundColorAttributeName:UIColor.blackColor}];
+    [text drawAtPoint:at withAttributes:@{NSFontAttributeName:font,NSForegroundColorAttributeName:darkInk}];
     CGContextRestoreGState(c);
     CGContextSaveGState(c);
     CGContextClipToRect(c,CGRectMake(fillW,0,bodyW-fillW,h));

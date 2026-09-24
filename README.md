@@ -1,4 +1,6 @@
-# HomeTA 0.6.1 — fixes 0.6.0 build error (missing HTTree helper)
+# HomeTA 0.6.2 — fixes doubled/ghosted battery digits
+
+0.6.2: normal (non-charging, non-critical, non-low-power) battery digits used a destination-out blend to punch the number through the white fill, revealing a transparent hole. Because the layer bitmap is non-opaque, the fill/track boundary crossing a glyph stroke produced two misaligned halves of that stroke, which read as a doubled or ghosted outline (matches the reported look). Replaced with two plain, non-blended fills (dark ink over the filled part, white ink over the empty part) split by the same clip boundary -- same visual intent, no compositing seam. Log confirms 0.6.1 loaded cleanly with no duplicate instance, so the earlier "mat giao dien iOS 27" report is more likely the CarPlay Dashboard screen (a separate screen from Home that HomeTA does not touch) than a regression -- send a photo of exactly which screen looked wrong to confirm.
 
 0.6.1: 0.6.0 failed to build (HTTree undeclared) because the tree-dump helper was accidentally deleted while removing the old wallpaper-search code, but the new dock diagnostic still called it. Re-added HTTree; no other logic changed from 0.6.0.
 
