@@ -1,5 +1,10 @@
-# HomeTA 0.7.5 -- rounded dock corners restored (confirmed working), wallpaper diagnosis still pending
+# HomeTA 0.7.6 -- targets and replaces the real page-background layer directly
 
+0.7.6: with frames now in HOMETREE, found the actual layer painting the stock red/blue wallpaper -- a leaf layer, opaque, sized exactly to Home's own bounds (381.67x240), while its four sibling page layers are all 16pt shorter (224, the page-dot strip carved out). Every previous wallpaper attempt added a backdrop BEHIND this layer, which this real layer simply kept painting over. 0.7.6 instead finds that exact layer (by that size signature, walking Home's own layer tree each layout pass so it also catches a page's background the first time you swipe to it) and hides it, inserting our own painted wallpaper layer in its place at the same position in the layer stack.
+
+The window-level backdrop from 0.6.3 is left in place as a harmless fallback underneath; it was never the problem, it was just always covered.
+
+If this still doesn't show the new wallpaper, send the log's PAGEBG line (or its absence) -- that tells us whether the size-matching heuristic actually found the real layer on this specific unit or not, which is different information than anything sent so far.
 0.7.5: the 0.7.4 magenta test confirmed content CAN render above the real dock -- zPosition was the right idea. Reverted the dock mask from a solid magenta test box back to the real design: a rounded hole punched out so the real dock content shows through, corner patches cropped from the actual painted wallpaper bitmap (not a flat-color guess), fixed zPosition (999999, no more runaway feedback with the battery layer's own fixed 1000000).
 
 The wallpaper itself (the full-screen stock red/blue background) is UNRELATED to this fix and still needs its own diagnosis -- that needs the frame-enhanced HOMETREE log from 0.7.4/0.7.5 plus a photo, which hasn't come back with a positive/negative confirmation yet. Send both after this test.

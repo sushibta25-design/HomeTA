@@ -1,4 +1,4 @@
-// HomeTA 0.7.5 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.7.6 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.7.5"
+#define HT_VERSION @"0.7.6"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -339,6 +339,50 @@ static void HTPaintWallpaperOnWindow(UIWindow *window) {
     [CATransaction commit];
 }
 
+#pragma mark - Real page-background replacement
+// HOMETREE (with frames, 0.7.4+) found exactly one layer per Home page shaped like the giveaway:
+// a leaf (no sublayers), opaque, sized to Home's own full bounds (381.67x240) while its four
+// sibling "page" layers are all 16pt shorter (224 -- the height left over once the page-dot strip
+// is excluded). That leaf is almost certainly the real stock wallpaper for that page. Instead of
+// adding our own backdrop BEHIND everything (which this real layer was simply painting over),
+// this hides that exact layer and inserts our own painted wallpaper in its place.
+static char HTPageBgPatchedKey;
+
+static void HTFindAndPatchPageBackgrounds(CALayer *layer, CGSize targetSize, NSUInteger depth) {
+    if (depth==0 || !layer) return;
+    for (CALayer *sub in [layer.sublayers copy]) {
+        if (sub.sublayers.count==0 && sub.opaque && !objc_getAssociatedObject(sub,&HTPageBgPatchedKey)
+            && fabs(sub.bounds.size.width-targetSize.width)<1.5 && fabs(sub.bounds.size.height-targetSize.height)<1.5
+            && ![NSStringFromClass(sub.class) hasPrefix:@"HomeTA"]) {
+            objc_setAssociatedObject(sub,&HTPageBgPatchedKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            NSInteger style=HTSource.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
+            HTWallpaper *painter=[HTWallpaper new];
+            painter.htStyle=style;
+            painter.bounds=(CGRect){CGPointZero,targetSize};
+            CGFloat scale=MAX(1,HTSource.screen.scale ?: 2);
+            UIGraphicsBeginImageContextWithOptions(targetSize,YES,scale);
+            [painter drawRect:painter.bounds];
+            UIImage *img=UIGraphicsGetImageFromCurrentImageContext();
+            UIGraphicsEndImageContext();
+            CALayer *replacement=[CALayer layer];
+            replacement.name=@"HomeTA.PageWallpaper";
+            replacement.frame=sub.frame;
+            replacement.contentsGravity=kCAGravityResize;
+            replacement.contentsScale=scale;
+            replacement.contents=(__bridge id)img.CGImage;
+            replacement.actions=@{@"contents":NSNull.null,@"position":NSNull.null,@"bounds":NSNull.null,@"hidden":NSNull.null};
+            HTNoHit(replacement);
+            [CATransaction begin]; [CATransaction setDisableActions:YES];
+            sub.hidden=YES;
+            NSUInteger idx=[layer.sublayers indexOfObject:sub];
+            [layer insertSublayer:replacement atIndex:(unsigned)idx];
+            [CATransaction commit];
+            HTLog([NSString stringWithFormat:@"PAGEBG replaced class=%@ frame=%@",NSStringFromClass(sub.class),NSStringFromCGRect(sub.frame)]);
+        }
+        HTFindAndPatchPageBackgrounds(sub,targetSize,depth-1);
+    }
+}
+
 static void HTUpdateWindowWallpaper(void) {
     UIWindowScene *scene=HTSource.windowScene;
     if (!scene) return;
@@ -484,6 +528,7 @@ static void HTLayoutBatteryLayer(void) {
     UIWindowScene *scene=source.windowScene;
     if (!scene) return;
     HTUpdateWindowWallpaper();
+    if (home) HTFindAndPatchPageBackgrounds(home.layer,home.bounds.size,8);
     HTLogHomeTreeOnce(source);
     HTLogDockTreeOnce(scene);
     CGRect dock; BOOL onLeft=YES;
