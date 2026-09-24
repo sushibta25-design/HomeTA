@@ -1,4 +1,4 @@
-// HomeTA 0.7.2 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.7.3 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.7.2"
+#define HT_VERSION @"0.7.3"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -347,6 +347,31 @@ static void HTUpdateWindowWallpaper(void) {
     }
 }
 
+#pragma mark - Home content tree diagnostic (why the wallpaper layer stays hidden on some units)
+// The battery and the dock mask are both invisible-until-we-set-zPosition, because array order
+// alone doesn't win against a sibling with an explicit higher zPosition. The wallpaper layer never
+// sets one either, and unlike the dock mask it can't just blindly jump to the top (that would cover
+// the real icons/labels, not just an empty margin). So first: log exactly what real content already
+// sits in this window and at what zPosition, once, so the next build can insert just above whatever
+// is actually painting solid pixels instead of guessing.
+static BOOL HTHomeTreeLogged=NO;
+static NSString *HTLayerTree(CALayer *l, NSUInteger depth) {
+    NSMutableString *out=[NSMutableString stringWithFormat:@"%@(z=%.0f,op=%d,a=%.2f)",
+        NSStringFromClass(l.class),l.zPosition,l.opaque,l.opacity];
+    if (depth && l.sublayers.count) {
+        [out appendString:@"["];
+        NSUInteger i=0;
+        for (CALayer *sub in l.sublayers) { if (i++) [out appendString:@","]; if (i>8) { [out appendString:@"…"]; break; } [out appendString:HTLayerTree(sub,depth-1)]; }
+        [out appendString:@"]"];
+    }
+    return out;
+}
+static void HTLogHomeTreeOnce(UIWindow *window) {
+    if (HTHomeTreeLogged || !window) return;
+    HTHomeTreeLogged=YES;
+    HTLog([NSString stringWithFormat:@"HOMETREE window=%p %@",(void*)window,HTLayerTree(window.layer,7)]);
+}
+
 #pragma mark - Dock shape diagnostic (read-only — no visual change yet)
 // To round the dock rail's outer corners like iOS 27 without repeating the earlier touch
 // regression, we first need the exact backdrop view inside DBStatusBarHostWindow. This logs its
@@ -405,6 +430,14 @@ static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BO
     void *wallSrcId = (__bridge void*)wallLayer.contents;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     mask.frame=dock;
+    // Same fix that made the battery visible on this same window: appending via addSublayer only
+    // controls ARRAY order, not actual stacking -- any sibling with an explicit higher zPosition
+    // (the real dock content, it turns out) still draws in front regardless. Force this above
+    // everything, exactly like the battery layer does. Safe here because the punched-out hole is
+    // genuinely transparent, so it can never cover the real dock icons no matter its zPosition.
+    CGFloat maskTopZ=0; for (CALayer *l in host.layer.sublayers) if (l!=mask) maskTopZ=MAX(maskTopZ,l.zPosition);
+    CGFloat maskWantZ=MAX(9999,maskTopZ+1);
+    if (mask.zPosition!=maskWantZ) mask.zPosition=maskWantZ;
     if (created || !CGRectEqualToRect(dock,HTDockMaskRect) || dark!=HTDockMaskDark || wallSrcId!=HTDockMaskWallSrc || !mask.contents) {
         HTDockMaskRect=dock; HTDockMaskDark=dark; HTDockMaskWallSrc=wallSrcId;
         CGFloat scale=MAX(1,host.screen.scale ?: 2);
@@ -452,6 +485,7 @@ static void HTLayoutBatteryLayer(void) {
     UIWindowScene *scene=source.windowScene;
     if (!scene) return;
     HTUpdateWindowWallpaper();
+    HTLogHomeTreeOnce(source);
     HTLogDockTreeOnce(scene);
     CGRect dock; BOOL onLeft=YES;
     if (!HTDockRect(source,home,&dock,&onLeft)) {
