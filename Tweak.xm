@@ -1,4 +1,4 @@
-// HomeTA 0.7.6 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.7.7 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.7.6"
+#define HT_VERSION @"0.7.7"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -346,15 +346,25 @@ static void HTPaintWallpaperOnWindow(UIWindow *window) {
 // is excluded). That leaf is almost certainly the real stock wallpaper for that page. Instead of
 // adding our own backdrop BEHIND everything (which this real layer was simply painting over),
 // this hides that exact layer and inserts our own painted wallpaper in its place.
-static char HTPageBgPatchedKey;
+// Track every (original, replacement) pair we've created so every subsequent layout pass can
+// re-assert the hide -- if the system silently un-hides its own layer on some later refresh (very
+// plausible: it's a system-owned layer, not ours), a one-time hide would get quietly undone and we
+// would never notice, because our "already patched" marker stops us from ever looking at it again.
+static NSMapTable<CALayer*,CALayer*> *HTPatchedPairs; // original -> replacement, both weak
 
 static void HTFindAndPatchPageBackgrounds(CALayer *layer, CGSize targetSize, NSUInteger depth) {
+    if (!HTPatchedPairs) HTPatchedPairs=[NSMapTable weakToWeakObjectsMapTable];
+    // Re-assert every pass: the original may have been silently un-hidden since we last checked.
+    for (CALayer *original in [HTPatchedPairs keyEnumerator]) {
+        if (!original.hidden) { original.hidden=YES; HTLog(@"PAGEBG re-hidden (system had un-hidden it)"); }
+        CALayer *replacement=[HTPatchedPairs objectForKey:original];
+        if (replacement && !CGRectEqualToRect(replacement.frame,original.frame)) replacement.frame=original.frame;
+    }
     if (depth==0 || !layer) return;
     for (CALayer *sub in [layer.sublayers copy]) {
-        if (sub.sublayers.count==0 && sub.opaque && !objc_getAssociatedObject(sub,&HTPageBgPatchedKey)
+        if (sub.sublayers.count==0 && sub.opaque && ![HTPatchedPairs objectForKey:sub]
             && fabs(sub.bounds.size.width-targetSize.width)<1.5 && fabs(sub.bounds.size.height-targetSize.height)<1.5
             && ![NSStringFromClass(sub.class) hasPrefix:@"HomeTA"]) {
-            objc_setAssociatedObject(sub,&HTPageBgPatchedKey,@YES,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             NSInteger style=HTSource.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
             HTWallpaper *painter=[HTWallpaper new];
             painter.htStyle=style;
@@ -377,6 +387,7 @@ static void HTFindAndPatchPageBackgrounds(CALayer *layer, CGSize targetSize, NSU
             NSUInteger idx=[layer.sublayers indexOfObject:sub];
             [layer insertSublayer:replacement atIndex:(unsigned)idx];
             [CATransaction commit];
+            [HTPatchedPairs setObject:replacement forKey:sub];
             HTLog([NSString stringWithFormat:@"PAGEBG replaced class=%@ frame=%@",NSStringFromClass(sub.class),NSStringFromCGRect(sub.frame)]);
         }
         HTFindAndPatchPageBackgrounds(sub,targetSize,depth-1);

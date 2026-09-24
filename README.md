@@ -1,5 +1,8 @@
-# HomeTA 0.7.6 -- targets and replaces the real page-background layer directly
+# HomeTA 0.7.7 -- keeps re-hiding the real page background every pass, not just once
 
+0.7.7: 0.7.6's PAGEBG line confirmed the right layer was found and hidden, yet the photo still showed the stock wallpaper completely unchanged. Likely cause: the original hide was a one-time action, guarded by a marker that then skipped ever looking at that layer again -- if the system (which owns that layer, not us) later reset its own hidden flag back to NO on some subsequent refresh, our code would never notice, since it had already stopped watching.
+
+Now every (original, replacement) pair is kept in a live map, and every single layout pass re-asserts hidden=YES on the original and re-syncs the replacement's frame, instead of patching once and walking away. If the system keeps re-enabling it, the log will now show repeated 'PAGEBG re-hidden (system had un-hidden it)' lines, which is itself useful information -- send the log either way, that line's presence or absence tells us something new about what's actually happening on this unit.
 0.7.6: with frames now in HOMETREE, found the actual layer painting the stock red/blue wallpaper -- a leaf layer, opaque, sized exactly to Home's own bounds (381.67x240), while its four sibling page layers are all 16pt shorter (224, the page-dot strip carved out). Every previous wallpaper attempt added a backdrop BEHIND this layer, which this real layer simply kept painting over. 0.7.6 instead finds that exact layer (by that size signature, walking Home's own layer tree each layout pass so it also catches a page's background the first time you swipe to it) and hides it, inserting our own painted wallpaper layer in its place at the same position in the layer stack.
 
 The window-level backdrop from 0.6.3 is left in place as a harmless fallback underneath; it was never the problem, it was just always covered.
