@@ -1,4 +1,4 @@
-// HomeTA 0.6.3 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.7.0 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.6.3"
+#define HT_VERSION @"0.7.0"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -372,6 +372,63 @@ static void HTLogDockTreeOnce(UIWindowScene *scene) {
     }
 }
 
+#pragma mark - Dock rounded-card overlay (touch-safe: never touches the real dock's frame)
+// DOCKTREE showed the real dock content and its tap targets are the SAME cross-process view
+// (_UITouchPassthroughView hosting the remote layers). Resizing THAT view is what broke touch in
+// an earlier build. This instead draws a solid frame on TOP of the real dock, with a rounded
+// hole cut out of the middle so the real content only shows through that hole -- the real view's
+// frame, and therefore every tap target inside it, never moves or changes size.
+static char HTDockMaskKey;
+static CGRect HTDockMaskRect;
+static BOOL HTDockMaskDark;
+
+static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BOOL dark) {
+    if (!host || CGRectIsEmpty(dock)) return;
+    CALayer *mask=objc_getAssociatedObject(host,&HTDockMaskKey);
+    BOOL created=NO;
+    if (!mask) {
+        mask=[CALayer layer];
+        mask.name=@"HomeTA.DockRoundMask";
+        mask.contentsGravity=kCAGravityResize;
+        mask.actions=@{@"contents":NSNull.null,@"position":NSNull.null,@"bounds":NSNull.null,@"hidden":NSNull.null};
+        HTNoHit(mask);
+        objc_setAssociatedObject(host,&HTDockMaskKey,mask,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        created=YES;
+    }
+    if (mask.superlayer!=host.layer) { [mask removeFromSuperlayer]; [host.layer addSublayer:mask]; }
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    mask.frame=dock;
+    if (created || !CGRectEqualToRect(dock,HTDockMaskRect) || dark!=HTDockMaskDark || !mask.contents) {
+        HTDockMaskRect=dock; HTDockMaskDark=dark;
+        CGFloat scale=MAX(1,host.screen.scale ?: 2);
+        CGSize size=dock.size;
+        // iOS 27 reference: the rail floats with a small gap off the screen's outer edge (top,
+        // bottom, and the outer side) but stays flush against the app-icon content on its inner side.
+        CGFloat topGap=6, bottomGap=6, outerGap=6, innerGap=0;
+        CGRect inner = onLeft
+            ? CGRectMake(outerGap,topGap,size.width-outerGap-innerGap,size.height-topGap-bottomGap)
+            : CGRectMake(innerGap,topGap,size.width-outerGap-innerGap,size.height-topGap-bottomGap);
+        if (inner.size.width>0 && inner.size.height>0) {
+            CGFloat radius=MIN(18,MIN(inner.size.width,inner.size.height)/2);
+            UIColor *frameColor = dark ? [UIColor colorWithRed:0.024 green:0.039 blue:0.125 alpha:1]
+                                        : [UIColor colorWithRed:0.918 green:0.941 blue:1.0 alpha:1];
+            UIGraphicsBeginImageContextWithOptions(size,NO,scale);
+            CGContextRef c=UIGraphicsGetCurrentContext();
+            [frameColor setFill];
+            UIRectFill(CGRectMake(0,0,size.width,size.height));
+            CGContextSetBlendMode(c,kCGBlendModeClear);
+            [[UIBezierPath bezierPathWithRoundedRect:inner cornerRadius:radius] fill];
+            UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
+            UIGraphicsEndImageContext();
+            mask.contentsScale=scale;
+            mask.contents=(__bridge id)image.CGImage;
+            HTLog([NSString stringWithFormat:@"DOCKMASK frame=%@ inner=%@ onLeft=%d dark=%d created=%d",
+                NSStringFromCGRect(dock),NSStringFromCGRect(inner),onLeft,dark,created]);
+        }
+    }
+    [CATransaction commit];
+}
+
 static void HTLayoutBatteryLayer(void) {
     UIWindow *source=HTSource;
     UIView *home=HTHome;
@@ -388,6 +445,10 @@ static void HTLayoutBatteryLayer(void) {
     }
     UIWindow *host=HTDockWindow(scene);
     CALayer *parent=(host ?: source).layer;
+    if (host) {
+        NSInteger paintStyle=source.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
+        HTUpdateDockRoundedMask(host,dock,onLeft,paintStyle==2);
+    }
     BOOL created=NO;
     if (!HTBatteryLayer || HTBatteryLayer.superlayer!=parent) {
         HTReleaseBatteryLayer();
