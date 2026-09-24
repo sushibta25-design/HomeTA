@@ -1,4 +1,4 @@
-// HomeTA 0.7.4 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.7.5 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.7.4"
+#define HT_VERSION @"0.7.5"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -430,33 +430,44 @@ static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BO
     void *wallSrcId = (__bridge void*)wallLayer.contents;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     mask.frame=dock;
-    // Same fix that made the battery visible on this same window: appending via addSublayer only
-    // controls ARRAY order, not actual stacking -- any sibling with an explicit higher zPosition
-    // (the real dock content, it turns out) still draws in front regardless. Force this above
-    // everything, exactly like the battery layer does. Safe here because the punched-out hole is
-    // genuinely transparent, so it can never cover the real dock icons no matter its zPosition.
-    // Fixed constant -- computing this from siblings created a runaway feedback loop with the
-    // battery layer (see its own comment). Deliberately just BELOW the battery's fixed constant so
-    // ordering between the two, which don't overlap anyway, is unambiguous.
+    // 0.7.4 confirmed with a solid magenta test that content CAN render above the real dock here
+    // as long as zPosition beats it -- fixed constant, not derived from siblings (that caused a
+    // runaway feedback loop with the battery layer, see its comment).
     CGFloat maskWantZ=999999;
     if (mask.zPosition!=maskWantZ) mask.zPosition=maskWantZ;
     if (created || !CGRectEqualToRect(dock,HTDockMaskRect) || dark!=HTDockMaskDark || wallSrcId!=HTDockMaskWallSrc || !mask.contents) {
         HTDockMaskRect=dock; HTDockMaskDark=dark; HTDockMaskWallSrc=wallSrcId;
         CGFloat scale=MAX(1,host.screen.scale ?: 2);
         CGSize size=dock.size;
-        CGFloat radius=MIN(14,MIN(size.width,size.height)/2); // kept only so the log line below stays meaningful
+        UIRectCorner corners = onLeft ? (UIRectCornerTopLeft|UIRectCornerBottomLeft)
+                                       : (UIRectCornerTopRight|UIRectCornerBottomRight);
+        CGFloat radius=MIN(14,MIN(size.width,size.height)/2);
         UIGraphicsBeginImageContextWithOptions(size,NO,scale);
         CGContextRef c=UIGraphicsGetCurrentContext();
-        (void)c;
-        // TEMPORARY DIAGNOSTIC (0.7.4): solid, opaque, obviously-wrong magenta covering the WHOLE
-        // dock rect, no transparent hole. This answers one yes/no question -- can anything we draw
-        // in this window visually appear on top of the real dock content at all -- before spending
-        // another round refining the rounded-corner design. If the dock still looks completely
-        // normal (no red/magenta anywhere) after this build, the earlier zPosition theory is wrong
-        // and the real content here does not respect local layer ordering, which changes what's
-        // worth trying next.
-        [[UIColor colorWithRed:1 green:0 blue:0.6 alpha:1] setFill];
-        UIRectFill(CGRectMake(0,0,size.width,size.height));
+        if (wallImage && CGImageGetWidth(wallImage)>0 && host.bounds.size.width>0) {
+            // Image from UIGraphicsGetImageFromCurrentImageContext is already stored top-down
+            // (matches UIKit coordinates), so no Y-flip here -- that flip was in 0.7.2 and, for a
+            // dock rect spanning the full window height, happened to compute the same y=0 either
+            // way, so it never actually proved itself right or wrong. Left out this time.
+            CGFloat imgScale=(CGFloat)CGImageGetWidth(wallImage)/host.bounds.size.width;
+            CGRect cropPx=CGRectMake(dock.origin.x*imgScale,dock.origin.y*imgScale,
+                                      dock.size.width*imgScale,dock.size.height*imgScale);
+            CGImageRef crop=CGImageCreateWithImageInRect(wallImage,cropPx);
+            if (crop) {
+                UIImage *cropImg=[UIImage imageWithCGImage:crop scale:scale orientation:UIImageOrientationUp];
+                [cropImg drawInRect:CGRectMake(0,0,size.width,size.height)];
+                CGImageRelease(crop);
+            }
+        } else {
+            UIColor *cornerColor = dark ? [UIColor colorWithRed:0.024 green:0.039 blue:0.125 alpha:1]
+                                         : [UIColor colorWithRed:0.918 green:0.941 blue:1.0 alpha:1];
+            [cornerColor setFill];
+            UIRectFill(CGRectMake(0,0,size.width,size.height));
+        }
+        CGContextSetBlendMode(c,kCGBlendModeClear);
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0,0,size.width,size.height)
+                                byRoundingCorners:corners
+                                      cornerRadii:CGSizeMake(radius,radius)] fill];
         UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
         UIGraphicsEndImageContext();
         mask.contentsScale=scale;
