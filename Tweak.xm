@@ -1,4 +1,4 @@
-// HomeTA 0.6.2 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.6.3 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.6.2"
+#define HT_VERSION @"0.6.3"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -289,56 +289,62 @@ static void HTReleaseBatteryLayer(void) {
     HTRenderedSize=CGSizeZero; HTRenderedScale=0;
 }
 
-#pragma mark - Window-level wallpaper (survives app-open/close zoom animation)
+#pragma mark - Window-level wallpaper (survives app-open/close zoom animation AND window swap)
 // Painting the wallpaper only inside the Home content view left the stock iOS wallpaper visible
-// around the zooming app card and at the screen corners during open/close. It is now a CALayer
-// on the SAME WINDOW that hosts Home (HTSource), sized to the FULL WINDOW bounds and kept at the
-// bottom of that window's layer stack, so it stays the backdrop through the whole animation.
-static CALayer *HTWallLayer;
-static __weak UIWindow *HTWallWindow;
-static HTWallpaper *HTWallPainter;
-static CGSize HTWallSize;
-static CGFloat HTWallScale;
-static NSInteger HTWallStyle;
+// around the zooming app card and at the screen corners during open/close. CarPlay Home also
+// double-buffers itself across TWO windows (levels -2 and -1 in the log) and swaps which one is
+// on screen for its transition animation, so painting only the window Home happened to be in at
+// attach time sometimes lands on the currently-HIDDEN buffer ("HOME attached ... UIWindow(hidden)"
+// in the log) -- the wallpaper is correct but invisible until the buffers swap. Fixed by painting
+// an identical layer onto EVERY negative-level window in the scene, not just the one Home is in.
+static char HTWallLayerKey;
 
-static void HTUpdateWindowWallpaper(void) {
-    UIWindow *window=HTSource;
+static void HTPaintWallpaperOnWindow(UIWindow *window) {
     if (!window || CGRectIsEmpty(window.bounds)) return;
+    CALayer *layer=objc_getAssociatedObject(window,&HTWallLayerKey);
     BOOL created=NO;
-    if (!HTWallLayer || HTWallWindow!=window) {
-        [HTWallLayer removeFromSuperlayer];
-        HTWallLayer=[CALayer layer];
-        HTWallLayer.name=@"HomeTA.Wallpaper";
-        HTWallLayer.contentsGravity=kCAGravityResize;
-        HTWallLayer.actions=@{@"contents":NSNull.null,@"position":NSNull.null,@"bounds":NSNull.null,@"hidden":NSNull.null};
-        HTNoHit(HTWallLayer);
-        [window.layer insertSublayer:HTWallLayer atIndex:0];
-        HTWallWindow=window;
-        HTWallPainter=[HTWallpaper new];
-        HTWallSize=CGSizeZero; created=YES;
+    if (!layer) {
+        layer=[CALayer layer];
+        layer.name=@"HomeTA.Wallpaper";
+        layer.contentsGravity=kCAGravityResize;
+        layer.actions=@{@"contents":NSNull.null,@"position":NSNull.null,@"bounds":NSNull.null,@"hidden":NSNull.null};
+        HTNoHit(layer);
+        objc_setAssociatedObject(window,&HTWallLayerKey,layer,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        created=YES;
+    }
+    if (layer.superlayer!=window.layer || window.layer.sublayers.firstObject!=layer) {
+        [layer removeFromSuperlayer];
+        [window.layer insertSublayer:layer atIndex:0];
     }
     CGSize size=window.bounds.size;
-    CGFloat scale=MAX(1,window.screen.scale);
+    CGFloat scale=MAX(1,window.screen.scale ?: 2);
     NSInteger style=window.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
+    NSString *key=[NSString stringWithFormat:@"%.0fx%.0f@%.0f#%ld",size.width,size.height,scale,(long)style];
     [CATransaction begin]; [CATransaction setDisableActions:YES];
-    if (window.layer.sublayers.firstObject!=HTWallLayer) {
-        [HTWallLayer removeFromSuperlayer];
-        [window.layer insertSublayer:HTWallLayer atIndex:0];
-    }
-    HTWallLayer.frame=window.bounds;
-    if (!CGSizeEqualToSize(size,HTWallSize) || scale!=HTWallScale || style!=HTWallStyle || !HTWallLayer.contents) {
-        HTWallPainter.htStyle=style;
-        HTWallPainter.bounds=(CGRect){CGPointZero,size};
+    layer.frame=window.bounds;
+    if (![layer.name isEqualToString:key] || !layer.contents) {
+        HTWallpaper *painter=[HTWallpaper new];
+        painter.htStyle=style;
+        painter.bounds=(CGRect){CGPointZero,size};
         UIGraphicsBeginImageContextWithOptions(size,YES,scale);
-        [HTWallPainter drawRect:HTWallPainter.bounds];
+        [painter drawRect:painter.bounds];
         UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
         UIGraphicsEndImageContext();
-        HTWallLayer.contentsScale=scale;
-        HTWallLayer.contents=(__bridge id)image.CGImage;
-        HTWallSize=size; HTWallScale=scale; HTWallStyle=style;
-        HTLog([NSString stringWithFormat:@"WALL painted window=%p size=%@ style=%ld created=%d",(void*)window,NSStringFromCGSize(size),(long)style,created]);
+        layer.contentsScale=scale;
+        layer.contents=(__bridge id)image.CGImage;
+        layer.name=key; // repurposed as a cheap "already painted at this size/style" cache key
+        HTLog([NSString stringWithFormat:@"WALL painted window=%p level=%.0f hidden=%d size=%@ style=%ld created=%d",
+            (void*)window,window.windowLevel,window.hidden,NSStringFromCGSize(size),(long)style,created]);
     }
     [CATransaction commit];
+}
+
+static void HTUpdateWindowWallpaper(void) {
+    UIWindowScene *scene=HTSource.windowScene;
+    if (!scene) return;
+    for (UIWindow *w in scene.windows) {
+        if (w.windowLevel<0) HTPaintWallpaperOnWindow(w);
+    }
 }
 
 #pragma mark - Dock shape diagnostic (read-only — no visual change yet)
