@@ -1,4 +1,4 @@
-// HomeTA 0.7.0 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.7.1 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.7.0"
+#define HT_VERSION @"0.7.1"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -402,29 +402,30 @@ static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BO
         HTDockMaskRect=dock; HTDockMaskDark=dark;
         CGFloat scale=MAX(1,host.screen.scale ?: 2);
         CGSize size=dock.size;
-        // iOS 27 reference: the rail floats with a small gap off the screen's outer edge (top,
-        // bottom, and the outer side) but stays flush against the app-icon content on its inner side.
-        CGFloat topGap=6, bottomGap=6, outerGap=6, innerGap=0;
-        CGRect inner = onLeft
-            ? CGRectMake(outerGap,topGap,size.width-outerGap-innerGap,size.height-topGap-bottomGap)
-            : CGRectMake(innerGap,topGap,size.width-outerGap-innerGap,size.height-topGap-bottomGap);
-        if (inner.size.width>0 && inner.size.height>0) {
-            CGFloat radius=MIN(18,MIN(inner.size.width,inner.size.height)/2);
-            UIColor *frameColor = dark ? [UIColor colorWithRed:0.024 green:0.039 blue:0.125 alpha:1]
-                                        : [UIColor colorWithRed:0.918 green:0.941 blue:1.0 alpha:1];
-            UIGraphicsBeginImageContextWithOptions(size,NO,scale);
-            CGContextRef c=UIGraphicsGetCurrentContext();
-            [frameColor setFill];
-            UIRectFill(CGRectMake(0,0,size.width,size.height));
-            CGContextSetBlendMode(c,kCGBlendModeClear);
-            [[UIBezierPath bezierPathWithRoundedRect:inner cornerRadius:radius] fill];
-            UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
-            UIGraphicsEndImageContext();
-            mask.contentsScale=scale;
-            mask.contents=(__bridge id)image.CGImage;
-            HTLog([NSString stringWithFormat:@"DOCKMASK frame=%@ inner=%@ onLeft=%d dark=%d created=%d",
-                NSStringFromCGRect(dock),NSStringFromCGRect(inner),onLeft,dark,created]);
-        }
+        // An inset "floating card" (gap on every side) cropped real content that sits close to the
+        // edge -- the clock's own top digit, in testing. There is no safe inset amount, because we
+        // don't know where the remote-rendered content draws each frame. So this only rounds the
+        // two OUTER corners (top and bottom, on the screen-edge side) at the dock's OWN existing
+        // edge -- no shrinking, no cropping of anything drawn away from those literal corner pixels.
+        UIRectCorner corners = onLeft ? (UIRectCornerTopLeft|UIRectCornerBottomLeft)
+                                       : (UIRectCornerTopRight|UIRectCornerBottomRight);
+        CGFloat radius=MIN(14,MIN(size.width,size.height)/2);
+        UIColor *cornerColor = dark ? [UIColor colorWithRed:0.024 green:0.039 blue:0.125 alpha:1]
+                                     : [UIColor colorWithRed:0.918 green:0.941 blue:1.0 alpha:1];
+        UIGraphicsBeginImageContextWithOptions(size,NO,scale);
+        CGContextRef c=UIGraphicsGetCurrentContext();
+        [cornerColor setFill];
+        UIRectFill(CGRectMake(0,0,size.width,size.height));
+        CGContextSetBlendMode(c,kCGBlendModeClear);
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0,0,size.width,size.height)
+                                byRoundingCorners:corners
+                                      cornerRadii:CGSizeMake(radius,radius)] fill];
+        UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        mask.contentsScale=scale;
+        mask.contents=(__bridge id)image.CGImage;
+        HTLog([NSString stringWithFormat:@"DOCKMASK frame=%@ corners=outer radius=%.0f onLeft=%d dark=%d created=%d",
+            NSStringFromCGRect(dock),radius,onLeft,dark,created]);
     }
     [CATransaction commit];
 }
