@@ -1,4 +1,4 @@
-// HomeTA 0.7.7 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.8.0 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.7.7"
+#define HT_VERSION @"0.8.0"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -289,248 +289,37 @@ static void HTReleaseBatteryLayer(void) {
     HTRenderedSize=CGSizeZero; HTRenderedScale=0;
 }
 
-#pragma mark - Window-level wallpaper (survives app-open/close zoom animation AND window swap)
-// Painting the wallpaper only inside the Home content view left the stock iOS wallpaper visible
-// around the zooming app card and at the screen corners during open/close. CarPlay Home also
-// double-buffers itself across TWO windows (levels -2 and -1 in the log) and swaps which one is
-// on screen for its transition animation, so painting only the window Home happened to be in at
-// attach time sometimes lands on the currently-HIDDEN buffer ("HOME attached ... UIWindow(hidden)"
-// in the log) -- the wallpaper is correct but invisible until the buffers swap. Fixed by painting
-// an identical layer onto EVERY negative-level window in the scene, not just the one Home is in.
-static char HTWallLayerKey;
+#pragma mark - Window-level wallpaper (real UIView, not a bare CALayer)
+// Recovered from the 0.5.4 build (the one photo-confirmed working on this exact unit): the
+// wallpaper was inserted with insertSubview:atIndex: -- an actual UIView -- not insertSublayer:
+// on a bare CALayer. Every later rewrite (0.6.x-0.7.x) used a raw CALayer instead, and never
+// rendered on screen despite identical positioning/z-order logic, on this same device. Restoring
+// the real-UIView approach here; still applied to every negative-level window since the earlier
+// window-swap bug (painting only the currently-hidden buffer) was independently real and correct.
+static char HTWallViewKey;
 
 static void HTPaintWallpaperOnWindow(UIWindow *window) {
     if (!window || CGRectIsEmpty(window.bounds)) return;
-    CALayer *layer=objc_getAssociatedObject(window,&HTWallLayerKey);
+    HTWallpaper *wall=objc_getAssociatedObject(window,&HTWallViewKey);
     BOOL created=NO;
-    if (!layer) {
-        layer=[CALayer layer];
-        layer.name=@"HomeTA.Wallpaper";
-        layer.contentsGravity=kCAGravityResize;
-        layer.actions=@{@"contents":NSNull.null,@"position":NSNull.null,@"bounds":NSNull.null,@"hidden":NSNull.null};
-        HTNoHit(layer);
-        objc_setAssociatedObject(window,&HTWallLayerKey,layer,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!wall) {
+        wall=[[HTWallpaper alloc] initWithFrame:window.bounds];
+        wall.userInteractionEnabled=NO;
+        wall.opaque=YES;
+        wall.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+        wall.contentMode=UIViewContentModeRedraw;
+        objc_setAssociatedObject(window,&HTWallViewKey,wall,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         created=YES;
     }
-    if (layer.superlayer!=window.layer || window.layer.sublayers.firstObject!=layer) {
-        [layer removeFromSuperlayer];
-        [window.layer insertSublayer:layer atIndex:0];
+    if (wall.superview!=window || window.subviews.firstObject!=wall) {
+        [wall removeFromSuperview];
+        [window insertSubview:wall atIndex:0];
     }
-    CGSize size=window.bounds.size;
-    CGFloat scale=MAX(1,window.screen.scale ?: 2);
+    if (!CGRectEqualToRect(wall.frame,window.bounds)) wall.frame=window.bounds;
     NSInteger style=window.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
-    NSString *key=[NSString stringWithFormat:@"%.0fx%.0f@%.0f#%ld",size.width,size.height,scale,(long)style];
-    [CATransaction begin]; [CATransaction setDisableActions:YES];
-    layer.frame=window.bounds;
-    if (![layer.name isEqualToString:key] || !layer.contents) {
-        HTWallpaper *painter=[HTWallpaper new];
-        painter.htStyle=style;
-        painter.bounds=(CGRect){CGPointZero,size};
-        UIGraphicsBeginImageContextWithOptions(size,YES,scale);
-        [painter drawRect:painter.bounds];
-        UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
-        layer.contentsScale=scale;
-        layer.contents=(__bridge id)image.CGImage;
-        layer.name=key; // repurposed as a cheap "already painted at this size/style" cache key
-        HTLog([NSString stringWithFormat:@"WALL painted window=%p level=%.0f hidden=%d size=%@ style=%ld created=%d",
-            (void*)window,window.windowLevel,window.hidden,NSStringFromCGSize(size),(long)style,created]);
-    }
-    [CATransaction commit];
-}
-
-#pragma mark - Real page-background replacement
-// HOMETREE (with frames, 0.7.4+) found exactly one layer per Home page shaped like the giveaway:
-// a leaf (no sublayers), opaque, sized to Home's own full bounds (381.67x240) while its four
-// sibling "page" layers are all 16pt shorter (224 -- the height left over once the page-dot strip
-// is excluded). That leaf is almost certainly the real stock wallpaper for that page. Instead of
-// adding our own backdrop BEHIND everything (which this real layer was simply painting over),
-// this hides that exact layer and inserts our own painted wallpaper in its place.
-// Track every (original, replacement) pair we've created so every subsequent layout pass can
-// re-assert the hide -- if the system silently un-hides its own layer on some later refresh (very
-// plausible: it's a system-owned layer, not ours), a one-time hide would get quietly undone and we
-// would never notice, because our "already patched" marker stops us from ever looking at it again.
-static NSMapTable<CALayer*,CALayer*> *HTPatchedPairs; // original -> replacement, both weak
-
-static void HTFindAndPatchPageBackgrounds(CALayer *layer, CGSize targetSize, NSUInteger depth) {
-    if (!HTPatchedPairs) HTPatchedPairs=[NSMapTable weakToWeakObjectsMapTable];
-    // Re-assert every pass: the original may have been silently un-hidden since we last checked.
-    for (CALayer *original in [HTPatchedPairs keyEnumerator]) {
-        if (!original.hidden) { original.hidden=YES; HTLog(@"PAGEBG re-hidden (system had un-hidden it)"); }
-        CALayer *replacement=[HTPatchedPairs objectForKey:original];
-        if (replacement && !CGRectEqualToRect(replacement.frame,original.frame)) replacement.frame=original.frame;
-    }
-    if (depth==0 || !layer) return;
-    for (CALayer *sub in [layer.sublayers copy]) {
-        if (sub.sublayers.count==0 && sub.opaque && ![HTPatchedPairs objectForKey:sub]
-            && fabs(sub.bounds.size.width-targetSize.width)<1.5 && fabs(sub.bounds.size.height-targetSize.height)<1.5
-            && ![NSStringFromClass(sub.class) hasPrefix:@"HomeTA"]) {
-            NSInteger style=HTSource.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
-            HTWallpaper *painter=[HTWallpaper new];
-            painter.htStyle=style;
-            painter.bounds=(CGRect){CGPointZero,targetSize};
-            CGFloat scale=MAX(1,HTSource.screen.scale ?: 2);
-            UIGraphicsBeginImageContextWithOptions(targetSize,YES,scale);
-            [painter drawRect:painter.bounds];
-            UIImage *img=UIGraphicsGetImageFromCurrentImageContext();
-            UIGraphicsEndImageContext();
-            CALayer *replacement=[CALayer layer];
-            replacement.name=@"HomeTA.PageWallpaper";
-            replacement.frame=sub.frame;
-            replacement.contentsGravity=kCAGravityResize;
-            replacement.contentsScale=scale;
-            replacement.contents=(__bridge id)img.CGImage;
-            replacement.actions=@{@"contents":NSNull.null,@"position":NSNull.null,@"bounds":NSNull.null,@"hidden":NSNull.null};
-            HTNoHit(replacement);
-            [CATransaction begin]; [CATransaction setDisableActions:YES];
-            sub.hidden=YES;
-            NSUInteger idx=[layer.sublayers indexOfObject:sub];
-            [layer insertSublayer:replacement atIndex:(unsigned)idx];
-            [CATransaction commit];
-            [HTPatchedPairs setObject:replacement forKey:sub];
-            HTLog([NSString stringWithFormat:@"PAGEBG replaced class=%@ frame=%@",NSStringFromClass(sub.class),NSStringFromCGRect(sub.frame)]);
-        }
-        HTFindAndPatchPageBackgrounds(sub,targetSize,depth-1);
-    }
-}
-
-static void HTUpdateWindowWallpaper(void) {
-    UIWindowScene *scene=HTSource.windowScene;
-    if (!scene) return;
-    for (UIWindow *w in scene.windows) {
-        if (w.windowLevel<0) HTPaintWallpaperOnWindow(w);
-    }
-}
-
-#pragma mark - Home content tree diagnostic (why the wallpaper layer stays hidden on some units)
-// The battery and the dock mask are both invisible-until-we-set-zPosition, because array order
-// alone doesn't win against a sibling with an explicit higher zPosition. The wallpaper layer never
-// sets one either, and unlike the dock mask it can't just blindly jump to the top (that would cover
-// the real icons/labels, not just an empty margin). So first: log exactly what real content already
-// sits in this window and at what zPosition, once, so the next build can insert just above whatever
-// is actually painting solid pixels instead of guessing.
-static BOOL HTHomeTreeLogged=NO;
-static NSString *HTLayerTree(CALayer *l, NSUInteger depth) {
-    NSMutableString *out=[NSMutableString stringWithFormat:@"%@(z=%.0f,op=%d,a=%.2f,f=%@)",
-        NSStringFromClass(l.class),l.zPosition,l.opaque,l.opacity,NSStringFromCGRect(l.frame)];
-    if (depth && l.sublayers.count) {
-        [out appendString:@"["];
-        NSUInteger i=0;
-        for (CALayer *sub in l.sublayers) { if (i++) [out appendString:@","]; if (i>8) { [out appendString:@"…"]; break; } [out appendString:HTLayerTree(sub,depth-1)]; }
-        [out appendString:@"]"];
-    }
-    return out;
-}
-static void HTLogHomeTreeOnce(UIWindow *window) {
-    if (HTHomeTreeLogged || !window) return;
-    HTHomeTreeLogged=YES;
-    HTLog([NSString stringWithFormat:@"HOMETREE window=%p %@",(void*)window,HTLayerTree(window.layer,7)]);
-}
-
-#pragma mark - Dock shape diagnostic (read-only — no visual change yet)
-// To round the dock rail's outer corners like iOS 27 without repeating the earlier touch
-// regression, we first need the exact backdrop view inside DBStatusBarHostWindow. This logs its
-// subview tree once so the corner radius can be targeted precisely in the next build.
-static NSString *HTTree(UIView *v, NSUInteger depth) {
-    NSMutableString *out=[NSMutableString stringWithString:NSStringFromClass(v.class)];
-    if (depth && v.subviews.count) {
-        [out appendString:@"{"];
-        NSUInteger i=0;
-        for (UIView *sub in v.subviews) { if (i++) [out appendString:@","]; if (i>6) { [out appendString:@"…"]; break; } [out appendString:HTTree(sub,depth-1)]; }
-        [out appendString:@"}"];
-    }
-    return out;
-}
-static BOOL HTDockTreeLogged=NO;
-static void HTLogDockTreeOnce(UIWindowScene *scene) {
-    if (HTDockTreeLogged) return;
-    for (UIWindow *w in scene.windows) {
-        if (![NSStringFromClass(w.class) isEqualToString:@"DBStatusBarHostWindow"]) continue;
-        HTDockTreeLogged=YES;
-        HTLog([NSString stringWithFormat:@"DOCKTREE %@",HTTree(w,6)]);
-        break;
-    }
-}
-
-#pragma mark - Dock rounded-card overlay (touch-safe: never touches the real dock's frame)
-// DOCKTREE showed the real dock content and its tap targets are the SAME cross-process view
-// (_UITouchPassthroughView hosting the remote layers). Resizing THAT view is what broke touch in
-// an earlier build. This instead draws a solid frame on TOP of the real dock, with a rounded
-// hole cut out of the middle so the real content only shows through that hole -- the real view's
-// frame, and therefore every tap target inside it, never moves or changes size.
-static char HTDockMaskKey;
-static CGRect HTDockMaskRect;
-static BOOL HTDockMaskDark;
-static void *HTDockMaskWallSrc; // last wallpaper CGImage this mask was patched from (identity check only, never dereferenced)
-
-static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BOOL dark) {
-    if (!host || CGRectIsEmpty(dock)) return;
-    CALayer *mask=objc_getAssociatedObject(host,&HTDockMaskKey);
-    BOOL created=NO;
-    if (!mask) {
-        mask=[CALayer layer];
-        mask.name=@"HomeTA.DockRoundMask";
-        mask.contentsGravity=kCAGravityResize;
-        mask.actions=@{@"contents":NSNull.null,@"position":NSNull.null,@"bounds":NSNull.null,@"hidden":NSNull.null};
-        HTNoHit(mask);
-        objc_setAssociatedObject(host,&HTDockMaskKey,mask,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        created=YES;
-    }
-    if (mask.superlayer!=host.layer) { [mask removeFromSuperlayer]; [host.layer addSublayer:mask]; }
-    // Pull the exact bitmap already painted for the real Home wallpaper (same window bounds as the
-    // dock host per the logs), so the two corner patches match it pixel-for-pixel instead of a
-    // guessed flat color.
-    CALayer *wallLayer = HTSource ? objc_getAssociatedObject(HTSource,&HTWallLayerKey) : nil;
-    CGImageRef wallImage = (__bridge CGImageRef)wallLayer.contents;
-    void *wallSrcId = (__bridge void*)wallLayer.contents;
-    [CATransaction begin]; [CATransaction setDisableActions:YES];
-    mask.frame=dock;
-    // 0.7.4 confirmed with a solid magenta test that content CAN render above the real dock here
-    // as long as zPosition beats it -- fixed constant, not derived from siblings (that caused a
-    // runaway feedback loop with the battery layer, see its comment).
-    CGFloat maskWantZ=999999;
-    if (mask.zPosition!=maskWantZ) mask.zPosition=maskWantZ;
-    if (created || !CGRectEqualToRect(dock,HTDockMaskRect) || dark!=HTDockMaskDark || wallSrcId!=HTDockMaskWallSrc || !mask.contents) {
-        HTDockMaskRect=dock; HTDockMaskDark=dark; HTDockMaskWallSrc=wallSrcId;
-        CGFloat scale=MAX(1,host.screen.scale ?: 2);
-        CGSize size=dock.size;
-        UIRectCorner corners = onLeft ? (UIRectCornerTopLeft|UIRectCornerBottomLeft)
-                                       : (UIRectCornerTopRight|UIRectCornerBottomRight);
-        CGFloat radius=MIN(14,MIN(size.width,size.height)/2);
-        UIGraphicsBeginImageContextWithOptions(size,NO,scale);
-        CGContextRef c=UIGraphicsGetCurrentContext();
-        if (wallImage && CGImageGetWidth(wallImage)>0 && host.bounds.size.width>0) {
-            // Image from UIGraphicsGetImageFromCurrentImageContext is already stored top-down
-            // (matches UIKit coordinates), so no Y-flip here -- that flip was in 0.7.2 and, for a
-            // dock rect spanning the full window height, happened to compute the same y=0 either
-            // way, so it never actually proved itself right or wrong. Left out this time.
-            CGFloat imgScale=(CGFloat)CGImageGetWidth(wallImage)/host.bounds.size.width;
-            CGRect cropPx=CGRectMake(dock.origin.x*imgScale,dock.origin.y*imgScale,
-                                      dock.size.width*imgScale,dock.size.height*imgScale);
-            CGImageRef crop=CGImageCreateWithImageInRect(wallImage,cropPx);
-            if (crop) {
-                UIImage *cropImg=[UIImage imageWithCGImage:crop scale:scale orientation:UIImageOrientationUp];
-                [cropImg drawInRect:CGRectMake(0,0,size.width,size.height)];
-                CGImageRelease(crop);
-            }
-        } else {
-            UIColor *cornerColor = dark ? [UIColor colorWithRed:0.024 green:0.039 blue:0.125 alpha:1]
-                                         : [UIColor colorWithRed:0.918 green:0.941 blue:1.0 alpha:1];
-            [cornerColor setFill];
-            UIRectFill(CGRectMake(0,0,size.width,size.height));
-        }
-        CGContextSetBlendMode(c,kCGBlendModeClear);
-        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0,0,size.width,size.height)
-                                byRoundingCorners:corners
-                                      cornerRadii:CGSizeMake(radius,radius)] fill];
-        UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
-        mask.contentsScale=scale;
-        mask.contents=(__bridge id)image.CGImage;
-        HTLog([NSString stringWithFormat:@"DOCKMASK frame=%@ radius=%.0f onLeft=%d dark=%d patchedFromWallpaper=%d created=%d",
-            NSStringFromCGRect(dock),radius,onLeft,dark,wallImage!=NULL,created]);
-    }
-    [CATransaction commit];
+    if (wall.htStyle!=style) { wall.htStyle=style; [wall setNeedsDisplay]; }
+    if (created) HTLog([NSString stringWithFormat:@"WALL view attached window=%p level=%.0f hidden=%d bounds=%@ style=%ld",
+        (void*)window,window.windowLevel,window.hidden,NSStringFromCGRect(window.bounds),(long)style]);
 }
 
 static void HTLayoutBatteryLayer(void) {
@@ -539,7 +328,6 @@ static void HTLayoutBatteryLayer(void) {
     UIWindowScene *scene=source.windowScene;
     if (!scene) return;
     HTUpdateWindowWallpaper();
-    if (home) HTFindAndPatchPageBackgrounds(home.layer,home.bounds.size,8);
     HTLogHomeTreeOnce(source);
     HTLogDockTreeOnce(scene);
     CGRect dock; BOOL onLeft=YES;
