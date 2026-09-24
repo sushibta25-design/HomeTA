@@ -1,4 +1,4 @@
-// HomeTA 0.7.3 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.7.4 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.7.3"
+#define HT_VERSION @"0.7.4"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -356,8 +356,8 @@ static void HTUpdateWindowWallpaper(void) {
 // is actually painting solid pixels instead of guessing.
 static BOOL HTHomeTreeLogged=NO;
 static NSString *HTLayerTree(CALayer *l, NSUInteger depth) {
-    NSMutableString *out=[NSMutableString stringWithFormat:@"%@(z=%.0f,op=%d,a=%.2f)",
-        NSStringFromClass(l.class),l.zPosition,l.opaque,l.opacity];
+    NSMutableString *out=[NSMutableString stringWithFormat:@"%@(z=%.0f,op=%d,a=%.2f,f=%@)",
+        NSStringFromClass(l.class),l.zPosition,l.opaque,l.opacity,NSStringFromCGRect(l.frame)];
     if (depth && l.sublayers.count) {
         [out appendString:@"["];
         NSUInteger i=0;
@@ -435,40 +435,28 @@ static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BO
     // (the real dock content, it turns out) still draws in front regardless. Force this above
     // everything, exactly like the battery layer does. Safe here because the punched-out hole is
     // genuinely transparent, so it can never cover the real dock icons no matter its zPosition.
-    CGFloat maskTopZ=0; for (CALayer *l in host.layer.sublayers) if (l!=mask) maskTopZ=MAX(maskTopZ,l.zPosition);
-    CGFloat maskWantZ=MAX(9999,maskTopZ+1);
+    // Fixed constant -- computing this from siblings created a runaway feedback loop with the
+    // battery layer (see its own comment). Deliberately just BELOW the battery's fixed constant so
+    // ordering between the two, which don't overlap anyway, is unambiguous.
+    CGFloat maskWantZ=999999;
     if (mask.zPosition!=maskWantZ) mask.zPosition=maskWantZ;
     if (created || !CGRectEqualToRect(dock,HTDockMaskRect) || dark!=HTDockMaskDark || wallSrcId!=HTDockMaskWallSrc || !mask.contents) {
         HTDockMaskRect=dock; HTDockMaskDark=dark; HTDockMaskWallSrc=wallSrcId;
         CGFloat scale=MAX(1,host.screen.scale ?: 2);
         CGSize size=dock.size;
-        UIRectCorner corners = onLeft ? (UIRectCornerTopLeft|UIRectCornerBottomLeft)
-                                       : (UIRectCornerTopRight|UIRectCornerBottomRight);
-        CGFloat radius=MIN(14,MIN(size.width,size.height)/2);
+        CGFloat radius=MIN(14,MIN(size.width,size.height)/2); // kept only so the log line below stays meaningful
         UIGraphicsBeginImageContextWithOptions(size,NO,scale);
         CGContextRef c=UIGraphicsGetCurrentContext();
-        if (wallImage && CGImageGetWidth(wallImage)>0 && host.bounds.size.width>0) {
-            // CG image origin is bottom-left, UIKit is top-left -- flip the crop rect's Y.
-            CGFloat imgScale=(CGFloat)CGImageGetWidth(wallImage)/host.bounds.size.width;
-            CGRect cropPx=CGRectMake(dock.origin.x*imgScale,
-                                      (host.bounds.size.height-CGRectGetMaxY(dock))*imgScale,
-                                      dock.size.width*imgScale,dock.size.height*imgScale);
-            CGImageRef crop=CGImageCreateWithImageInRect(wallImage,cropPx);
-            if (crop) {
-                UIImage *cropImg=[UIImage imageWithCGImage:crop scale:scale orientation:UIImageOrientationUp];
-                [cropImg drawInRect:CGRectMake(0,0,size.width,size.height)];
-                CGImageRelease(crop);
-            }
-        } else {
-            UIColor *cornerColor = dark ? [UIColor colorWithRed:0.024 green:0.039 blue:0.125 alpha:1]
-                                         : [UIColor colorWithRed:0.918 green:0.941 blue:1.0 alpha:1];
-            [cornerColor setFill];
-            UIRectFill(CGRectMake(0,0,size.width,size.height));
-        }
-        CGContextSetBlendMode(c,kCGBlendModeClear);
-        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0,0,size.width,size.height)
-                                byRoundingCorners:corners
-                                      cornerRadii:CGSizeMake(radius,radius)] fill];
+        (void)c;
+        // TEMPORARY DIAGNOSTIC (0.7.4): solid, opaque, obviously-wrong magenta covering the WHOLE
+        // dock rect, no transparent hole. This answers one yes/no question -- can anything we draw
+        // in this window visually appear on top of the real dock content at all -- before spending
+        // another round refining the rounded-corner design. If the dock still looks completely
+        // normal (no red/magenta anywhere) after this build, the earlier zPosition theory is wrong
+        // and the real content here does not respect local layer ordering, which changes what's
+        // worth trying next.
+        [[UIColor colorWithRed:1 green:0 blue:0.6 alpha:1] setFill];
+        UIRectFill(CGRectMake(0,0,size.width,size.height));
         UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
         UIGraphicsEndImageContext();
         mask.contentsScale=scale;
@@ -523,10 +511,10 @@ static void HTLayoutBatteryLayer(void) {
     if (host) battery=[host convertRect:battery fromWindow:source];
     battery=CGRectIntegral(battery);
     BOOL changed=!CGRectEqualToRect(HTBatteryLayer.frame,battery);
-    // Stay above every sibling layer (the native dock backdrop sits above zPosition 100 on some units).
-    CGFloat topZ=0; NSUInteger siblings=0;
-    for (CALayer *l in parent.sublayers) { if (l!=HTBatteryLayer) { topZ=MAX(topZ,l.zPosition); siblings++; } }
-    CGFloat wantZ=MAX(10000,topZ+1);
+    // Fixed constant, not derived from siblings -- deriving it from "every sibling" caused a runaway
+    // feedback loop with the dock mask (each one kept re-measuring the other and climbing forever,
+    // visible as the zPosition endlessly increasing in the log).
+    CGFloat wantZ=1000000;
     BOOL isLast=parent.sublayers.lastObject==HTBatteryLayer;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     if (!isLast) { [HTBatteryLayer removeFromSuperlayer]; [parent addSublayer:HTBatteryLayer]; changed=YES; }
@@ -536,9 +524,9 @@ static void HTLayoutBatteryLayer(void) {
     [CATransaction commit];
     HTUpdateBattery();
     if (created || changed) {
-        HTLog([NSString stringWithFormat:@"DOCK LAYER host=%@ battery=%@ dock=%@ left=%d active=%ld hidden=%d z=%.0f siblingTopZ=%.0f siblings=%lu contents=%d hitTestOff=%d",
+        HTLog([NSString stringWithFormat:@"DOCK LAYER host=%@ battery=%@ dock=%@ left=%d active=%ld hidden=%d z=%.0f contents=%d hitTestOff=%d",
             host ? NSStringFromClass(host.class) : @"source(fallback)",NSStringFromCGRect(battery),NSStringFromCGRect(dock),onLeft,(long)scene.activationState,HTBatteryLayer.hidden,
-            HTBatteryLayer.zPosition,topZ,(unsigned long)siblings,HTBatteryLayer.contents!=nil,
+            HTBatteryLayer.zPosition,HTBatteryLayer.contents!=nil,
             [HTBatteryLayer respondsToSelector:@selector(allowsHitTesting)] ? !HTBatteryLayer.allowsHitTesting : -1]);
     }
 }
