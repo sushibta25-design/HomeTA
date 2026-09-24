@@ -1,4 +1,4 @@
-// HomeTA 0.9.3 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.9.4 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.9.3"
+#define HT_VERSION @"0.9.4"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -557,6 +557,62 @@ static BOOL HTInsideDock(UIView *v) {
     return NO;
 }
 static char HTHomeWallKey;
+#pragma mark - Second wallpaper layer, welded directly onto the real stock background
+// HOMETREE consistently shows one giveaway layer per Home page: a leaf (no sublayers), opaque,
+// sized to Home's own full bounds (381.67x240) while its sibling "page" layers are all 16pt
+// shorter. That's almost certainly the real stock wallpaper. An earlier attempt (0.7.6/0.7.7) hid
+// and replaced it directly and was abandoned as a failure -- but that conclusion was confounded by
+// the SAME "window-level insertion doesn't render on this unit" bug that also broke the wallpaper
+// entirely at the time. Now that content genuinely inside Home (HTAttachHomeWallpaper) is proven to
+// render, this is worth retrying: a second, independent wallpaper welded directly in the real
+// layer's place, as a backstop under the regular subview one for whatever brief moment (matching
+// the reported 3-way color flash during app open/close) the system's transition machinery might
+// bypass or precede the subview-based one.
+static NSMapTable<CALayer*,CALayer*> *HTWeldedPairs; // real original -> our replacement, both weak
+
+static void HTWeldPageBackgrounds(CALayer *layer, CGSize targetSize, NSUInteger depth) {
+    if (!HTWeldedPairs) HTWeldedPairs=[NSMapTable weakToWeakObjectsMapTable];
+    // Re-assert every pass: if the system ever un-hides its own layer again, notice and re-hide it
+    // instead of silently losing to it (the exact failure mode a one-time hide had before).
+    for (CALayer *original in [HTWeldedPairs keyEnumerator]) {
+        if (!original.hidden) original.hidden=YES;
+        CALayer *replacement=[HTWeldedPairs objectForKey:original];
+        if (replacement && !CGRectEqualToRect(replacement.frame,original.frame)) replacement.frame=original.frame;
+    }
+    if (depth==0 || !layer) return;
+    for (CALayer *sub in [layer.sublayers copy]) {
+        if (sub.sublayers.count==0 && sub.opaque && ![HTWeldedPairs objectForKey:sub]
+            && fabs(sub.bounds.size.width-targetSize.width)<1.5 && fabs(sub.bounds.size.height-targetSize.height)<1.5
+            && ![NSStringFromClass(sub.class) hasPrefix:@"HomeTA"]) {
+            NSInteger style=HTSource.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
+            HTWallpaper *painter=[HTWallpaper new];
+            painter.htStyle=style;
+            painter.bounds=(CGRect){CGPointZero,targetSize};
+            CGFloat scale=MAX(1,HTSource.screen.scale ?: 2);
+            UIGraphicsBeginImageContextWithOptions(targetSize,YES,scale);
+            [painter drawRect:painter.bounds];
+            UIImage *img=UIGraphicsGetImageFromCurrentImageContext();
+            UIGraphicsEndImageContext();
+            CALayer *replacement=[CALayer layer];
+            replacement.name=@"HomeTA.WeldedWallpaper";
+            replacement.frame=sub.frame;
+            replacement.contentsGravity=kCAGravityResize;
+            replacement.contentsScale=scale;
+            replacement.contents=(__bridge id)img.CGImage;
+            replacement.actions=@{@"contents":NSNull.null,@"position":NSNull.null,@"bounds":NSNull.null,@"hidden":NSNull.null};
+            HTNoHit(replacement);
+            [CATransaction begin]; [CATransaction setDisableActions:YES];
+            sub.hidden=YES;
+            NSUInteger idx=[layer.sublayers indexOfObject:sub];
+            [layer insertSublayer:replacement atIndex:(unsigned)idx];
+            [CATransaction commit];
+            [HTWeldedPairs setObject:replacement forKey:sub];
+            HTLog([NSString stringWithFormat:@"WELD replaced class=%@ frame=%@",NSStringFromClass(sub.class),NSStringFromCGRect(sub.frame)]);
+        }
+        HTWeldPageBackgrounds(sub,targetSize,depth-1);
+    }
+}
+
 static void HTAttachHomeWallpaper(UIView *home) {
     if (!home) return;
     HTWallpaper *wall=objc_getAssociatedObject(home,&HTHomeWallKey);
@@ -578,6 +634,7 @@ static void HTAttachHomeWallpaper(UIView *home) {
     NSInteger style=home.window.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
     if (wall.htStyle!=style) { wall.htStyle=style; [wall setNeedsDisplay]; }
     if (created) HTLog([NSString stringWithFormat:@"HOMEWALL view attached home=%p bounds=%@",(void*)home,NSStringFromCGRect(home.bounds)]);
+    HTWeldPageBackgrounds(home.layer,home.bounds.size,8);
 }
 
 static void HTAttachHome(UIView *icon) {

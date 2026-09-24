@@ -1,5 +1,10 @@
-# HomeTA 0.9.3 -- dock rounded slightly more, plus a light wallpaper tint wash
+# HomeTA 0.9.4 -- second wallpaper welded directly onto the real stock layer
 
+0.9.4: a photo grabbed mid-transition showed three colors braided together at the screen edges -- the app's own color, our fake wallpaper, and a third, more saturated red/magenta/blue that matches neither -- confirming a real stock layer still exists underneath and surfaces very briefly during the open/close animation, faster than the earlier frame-by-frame video check could catch.
+
+Added a second, independent wallpaper mechanism: find the exact real stock-background layer inside Home (same signature as before -- a leaf, opaque layer sized to Home's full bounds while sibling page layers are 16pt shorter), hide it, and weld our own painted layer directly into its place in the layer stack. This was tried once before (0.7.6/0.7.7) and looked like it failed, but that test ran alongside the window-level wallpaper attempt that we now know never rendered on this unit at all -- since content genuinely inside Home is now proven to render (the subview wallpaper), this deserves a clean retry on its own. Runs alongside the existing subview wallpaper as a backstop, not a replacement for it, and re-asserts the hide every layout pass in case the system ever un-hides its own layer again.
+
+Look for a 'WELD replaced' line in the log. If the three-color flash still happens, please try to grab another photo the same way (mid-transition, from a video) so we can see whether the leak got smaller or is unchanged.
 0.9.3: video review of 0.9.2 found no red-corner leak in either the app-open or the return-to-Home transition -- the DBAnimationView hook from 0.9.1 appears to have worked. Still waiting on the exact moment the user is seeing it, if any remains.
 
 Dock inset bumped from 2pt to 3pt and radius from 10 to 12 (2pt proved safe for the clock in the video, so a little more room). Added a light wallpaper-colored tint wash (22% alpha) over the dock's inner content area, on top of the real icons/clock rather than replacing them -- the actual dock background color is rendered by a separate process (per DOCKTREE) and isn't something this tweak can set directly, only paint over additively, so this is a tint approximation of 'colored like the Home wallpaper', not a true blur/material match.
