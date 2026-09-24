@@ -1,4 +1,4 @@
-// HomeTA 0.9.2 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.9.3 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.9.2"
+#define HT_VERSION @"0.9.3"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -415,15 +415,13 @@ static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BO
         HTDockMaskRect=dock; HTDockMaskDark=dark;
         CGFloat scale=MAX(1,host.screen.scale ?: 2);
         CGSize size=dock.size;
-        // Light inset this time -- 2pt on top/bottom/outer side, 0 on the inner (content) side --
-        // instead of the earlier 6pt, which was wide enough to cover part of the clock digit. The
-        // margin itself is now cropped straight from the real wallpaper (not a flat-color guess),
-        // so it should blend in even at this small size instead of reading as a mismatched box.
-        CGFloat topGap=2, bottomGap=2, outerGap=2, innerGap=0;
+        // A little more room now that 2pt proved safe in your video (clock stayed intact): 3pt
+        // margin, slightly bigger radius, for a more visibly rounded look.
+        CGFloat topGap=3, bottomGap=3, outerGap=3, innerGap=0;
         CGRect inner = onLeft
             ? CGRectMake(outerGap,topGap,size.width-outerGap-innerGap,size.height-topGap-bottomGap)
             : CGRectMake(innerGap,topGap,size.width-outerGap-innerGap,size.height-topGap-bottomGap);
-        CGFloat radius=MIN(10,MIN(inner.size.width,inner.size.height)/2);
+        CGFloat radius=MIN(12,MIN(inner.size.width,inner.size.height)/2);
         UIGraphicsBeginImageContextWithOptions(size,NO,scale);
         CGContextRef c=UIGraphicsGetCurrentContext();
         if (wallImage && CGImageGetWidth(wallImage)>0 && host.bounds.size.width>0) {
@@ -443,7 +441,29 @@ static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BO
             UIRectFill(CGRectMake(0,0,size.width,size.height));
         }
         CGContextSetBlendMode(c,kCGBlendModeClear);
-        [[UIBezierPath bezierPathWithRoundedRect:inner cornerRadius:radius] fill];
+        UIBezierPath *innerPath=[UIBezierPath bezierPathWithRoundedRect:inner cornerRadius:radius];
+        [innerPath fill];
+        // Tint wash: instead of leaving the inner hole fully transparent (showing the real dock's
+        // own plain mauve chrome untouched), lay a light wallpaper-colored film over it too, at low
+        // alpha so the real icons and clock underneath stay fully legible -- a cheap approximation
+        // of "the dock tinted/blurred like the Home wallpaper", since the real dock content is
+        // rendered by a separate process and its own base color isn't something this tweak can set
+        // directly (only paint additively on top of).
+        if (wallImage) {
+            CGContextSetBlendMode(c,kCGBlendModeNormal);
+            CGContextSaveGState(c);
+            [innerPath addClip];
+            CGFloat imgScale2=(CGFloat)CGImageGetWidth(wallImage)/host.bounds.size.width;
+            CGRect cropPx2=CGRectMake(dock.origin.x*imgScale2,dock.origin.y*imgScale2,
+                                       dock.size.width*imgScale2,dock.size.height*imgScale2);
+            CGImageRef crop2=CGImageCreateWithImageInRect(wallImage,cropPx2);
+            if (crop2) {
+                UIImage *tintImg=[UIImage imageWithCGImage:crop2 scale:scale orientation:UIImageOrientationUp];
+                [tintImg drawInRect:CGRectMake(0,0,size.width,size.height) blendMode:kCGBlendModeNormal alpha:0.22];
+                CGImageRelease(crop2);
+            }
+            CGContextRestoreGState(c);
+        }
         UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
         UIGraphicsEndImageContext();
         mask.contentsScale=scale;

@@ -1,5 +1,8 @@
-# HomeTA 0.9.2 -- fixes 0.9.1 build error + light inset dock rounding (2pt, wallpaper-accurate)
+# HomeTA 0.9.3 -- dock rounded slightly more, plus a light wallpaper tint wash
 
+0.9.3: video review of 0.9.2 found no red-corner leak in either the app-open or the return-to-Home transition -- the DBAnimationView hook from 0.9.1 appears to have worked. Still waiting on the exact moment the user is seeing it, if any remains.
+
+Dock inset bumped from 2pt to 3pt and radius from 10 to 12 (2pt proved safe for the clock in the video, so a little more room). Added a light wallpaper-colored tint wash (22% alpha) over the dock's inner content area, on top of the real icons/clock rather than replacing them -- the actual dock background color is rendered by a separate process (per DOCKTREE) and isn't something this tweak can set directly, only paint over additively, so this is a tint approximation of 'colored like the Home wallpaper', not a true blur/material match.
 0.9.2: fixed a Logos build error in the DBAnimationView hook (self.bounds/.window needs an explicit UIView cast when the class is only forward-declared -- unrelated to any of the wallpaper logic, which is unchanged from 0.9.1).
 
 Also retried the floating-card dock inset, at 2pt instead of 0.7.4's 6pt -- the earlier cropped clock digit was a real clipping problem (the margin covered part of the glyph), not a color mismatch, so this could still clip at 2pt; it's untested. The margin itself is now cropped from the real rendered wallpaper (not a flat-color guess) either way. Check closely whether the clock's leading digit is intact this time.
