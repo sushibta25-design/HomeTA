@@ -1,4 +1,6 @@
-# HomeTA 0.8.0 -- wallpaper restored as a real UIView (recovered technique from 0.5.4)
+# HomeTA 0.8.1 -- fixes 0.8.0 build errors (accidentally deleted several helper functions)
+
+0.8.1: while removing the old page-background hack, a block delete also took out HTUpdateWindowWallpaper, HTLogHomeTreeOnce/HTLayerTree, HTLogDockTreeOnce/HTTree, and HTUpdateDockRoundedMask with it -- all still called elsewhere, so the build failed with four 'use of undeclared identifier' errors. All five re-added, unchanged from their last working content. No logic changes from 0.8.0's actual wallpaper fix (the real UIView via insertSubview:).
 
 0.8.0: the user found and sent back the old 0.5.4 .deb, which a photo confirmed WAS showing the custom wallpaper on this exact unit. Extracting strings from its compiled dylib (no source was recoverable, only the binary) showed it called insertSubview:atIndex: -- an actual UIView -- while every rewrite since 0.6.0 used insertSublayer: on a bare CALayer instead. That is very likely why nothing in the 0.6.x/0.7.x line ever rendered on this device's Home window despite the position/z-order logic looking correct: a real UIView participates in the window's normal view-management bookkeeping in a way a manually inserted CALayer apparently does not for whatever renders this unit's CarPlay screen.
 

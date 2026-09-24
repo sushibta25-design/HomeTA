@@ -1,4 +1,4 @@
-// HomeTA 0.8.0 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.8.1 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.8.0"
+#define HT_VERSION @"0.8.1"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -321,6 +321,136 @@ static void HTPaintWallpaperOnWindow(UIWindow *window) {
     if (created) HTLog([NSString stringWithFormat:@"WALL view attached window=%p level=%.0f hidden=%d bounds=%@ style=%ld",
         (void*)window,window.windowLevel,window.hidden,NSStringFromCGRect(window.bounds),(long)style]);
 }
+
+static void HTUpdateWindowWallpaper(void) {
+    UIWindowScene *scene=HTSource.windowScene;
+    if (!scene) return;
+    for (UIWindow *w in scene.windows) {
+        if (w.windowLevel<0) HTPaintWallpaperOnWindow(w);
+    }
+}
+
+#pragma mark - One-shot diagnostics (Home layer tree with frames, dock view tree)
+static BOOL HTHomeTreeLogged=NO;
+static NSString *HTLayerTree(CALayer *l, NSUInteger depth) {
+    NSMutableString *out=[NSMutableString stringWithFormat:@"%@(z=%.0f,op=%d,a=%.2f,f=%@)",
+        NSStringFromClass(l.class),l.zPosition,l.opaque,l.opacity,NSStringFromCGRect(l.frame)];
+    if (depth && l.sublayers.count) {
+        [out appendString:@"["];
+        NSUInteger i=0;
+        for (CALayer *sub in l.sublayers) { if (i++) [out appendString:@","]; if (i>8) { [out appendString:@"…"]; break; } [out appendString:HTLayerTree(sub,depth-1)]; }
+        [out appendString:@"]"];
+    }
+    return out;
+}
+static void HTLogHomeTreeOnce(UIWindow *window) {
+    if (HTHomeTreeLogged || !window) return;
+    HTHomeTreeLogged=YES;
+    HTLog([NSString stringWithFormat:@"HOMETREE window=%p %@",(void*)window,HTLayerTree(window.layer,7)]);
+}
+
+static NSString *HTTree(UIView *v, NSUInteger depth) {
+    NSMutableString *out=[NSMutableString stringWithString:NSStringFromClass(v.class)];
+    if (depth && v.subviews.count) {
+        [out appendString:@"{"];
+        NSUInteger i=0;
+        for (UIView *sub in v.subviews) { if (i++) [out appendString:@","]; if (i>6) { [out appendString:@"…"]; break; } [out appendString:HTTree(sub,depth-1)]; }
+        [out appendString:@"}"];
+    }
+    return out;
+}
+static BOOL HTDockTreeLogged=NO;
+static void HTLogDockTreeOnce(UIWindowScene *scene) {
+    if (HTDockTreeLogged) return;
+    for (UIWindow *w in scene.windows) {
+        if (![NSStringFromClass(w.class) isEqualToString:@"DBStatusBarHostWindow"]) continue;
+        HTDockTreeLogged=YES;
+        HTLog([NSString stringWithFormat:@"DOCKTREE %@",HTTree(w,6)]);
+        break;
+    }
+}
+
+#pragma mark - Dock rounded-card overlay (touch-safe: never touches the real dock's frame)
+static char HTDockMaskKey;
+static CGRect HTDockMaskRect;
+static BOOL HTDockMaskDark;
+
+static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BOOL dark) {
+    if (!host || CGRectIsEmpty(dock)) return;
+    CALayer *mask=objc_getAssociatedObject(host,&HTDockMaskKey);
+    BOOL created=NO;
+    if (!mask) {
+        mask=[CALayer layer];
+        mask.name=@"HomeTA.DockRoundMask";
+        mask.contentsGravity=kCAGravityResize;
+        mask.actions=@{@"contents":NSNull.null,@"position":NSNull.null,@"bounds":NSNull.null,@"hidden":NSNull.null};
+        HTNoHit(mask);
+        objc_setAssociatedObject(host,&HTDockMaskKey,mask,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        created=YES;
+    }
+    if (mask.superlayer!=host.layer) { [mask removeFromSuperlayer]; [host.layer addSublayer:mask]; }
+    // Render the same deterministic wallpaper pattern into a temporary full-window bitmap and crop
+    // the dock's own region out of it, so the two corner patches match pixel-for-pixel. (The real
+    // wallpaper is now a UIView with its own drawRect:, not a cached CALayer bitmap, so this can't
+    // just read back .contents the way it used to -- render fresh here instead.)
+    NSInteger wallStyleNow=HTSource.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
+    CGImageRef wallImage=NULL;
+    UIImage *fullWallImage=nil;
+    if (HTSource && !CGRectIsEmpty(HTSource.bounds)) {
+        HTWallpaper *tmp=[HTWallpaper new];
+        tmp.htStyle=wallStyleNow;
+        tmp.bounds=(CGRect){CGPointZero,HTSource.bounds.size};
+        UIGraphicsBeginImageContextWithOptions(HTSource.bounds.size,YES,MAX(1,HTSource.screen.scale ?: 2));
+        [tmp drawRect:tmp.bounds];
+        fullWallImage=UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        wallImage=fullWallImage.CGImage;
+    }
+    (void)fullWallImage;
+    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    mask.frame=dock;
+    CGFloat maskWantZ=999999;
+    if (mask.zPosition!=maskWantZ) mask.zPosition=maskWantZ;
+    if (created || !CGRectEqualToRect(dock,HTDockMaskRect) || dark!=HTDockMaskDark || !mask.contents) {
+        HTDockMaskRect=dock; HTDockMaskDark=dark;
+        CGFloat scale=MAX(1,host.screen.scale ?: 2);
+        CGSize size=dock.size;
+        UIRectCorner corners = onLeft ? (UIRectCornerTopLeft|UIRectCornerBottomLeft)
+                                       : (UIRectCornerTopRight|UIRectCornerBottomRight);
+        CGFloat radius=MIN(14,MIN(size.width,size.height)/2);
+        UIGraphicsBeginImageContextWithOptions(size,NO,scale);
+        CGContextRef c=UIGraphicsGetCurrentContext();
+        if (wallImage && CGImageGetWidth(wallImage)>0 && host.bounds.size.width>0) {
+            CGFloat imgScale=(CGFloat)CGImageGetWidth(wallImage)/host.bounds.size.width;
+            CGRect cropPx=CGRectMake(dock.origin.x*imgScale,dock.origin.y*imgScale,
+                                      dock.size.width*imgScale,dock.size.height*imgScale);
+            CGImageRef crop=CGImageCreateWithImageInRect(wallImage,cropPx);
+            if (crop) {
+                UIImage *cropImg=[UIImage imageWithCGImage:crop scale:scale orientation:UIImageOrientationUp];
+                [cropImg drawInRect:CGRectMake(0,0,size.width,size.height)];
+                CGImageRelease(crop);
+            }
+        } else {
+            UIColor *cornerColor = dark ? [UIColor colorWithRed:0.024 green:0.039 blue:0.125 alpha:1]
+                                         : [UIColor colorWithRed:0.918 green:0.941 blue:1.0 alpha:1];
+            [cornerColor setFill];
+            UIRectFill(CGRectMake(0,0,size.width,size.height));
+        }
+        CGContextSetBlendMode(c,kCGBlendModeClear);
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0,0,size.width,size.height)
+                                byRoundingCorners:corners
+                                      cornerRadii:CGSizeMake(radius,radius)] fill];
+        UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        mask.contentsScale=scale;
+        mask.contents=(__bridge id)image.CGImage;
+        HTLog([NSString stringWithFormat:@"DOCKMASK frame=%@ radius=%.0f onLeft=%d dark=%d patchedFromWallpaper=%d created=%d",
+            NSStringFromCGRect(dock),radius,onLeft,dark,wallImage!=NULL,created]);
+    }
+    [CATransaction commit];
+}
+
+
 
 static void HTLayoutBatteryLayer(void) {
     UIWindow *source=HTSource;
