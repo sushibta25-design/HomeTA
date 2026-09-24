@@ -1,4 +1,4 @@
-// HomeTA 0.9.4 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.9.5 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.9.4"
+#define HT_VERSION @"0.9.5"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -459,7 +459,7 @@ static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BO
             CGImageRef crop2=CGImageCreateWithImageInRect(wallImage,cropPx2);
             if (crop2) {
                 UIImage *tintImg=[UIImage imageWithCGImage:crop2 scale:scale orientation:UIImageOrientationUp];
-                [tintImg drawInRect:CGRectMake(0,0,size.width,size.height) blendMode:kCGBlendModeNormal alpha:0.22];
+                [tintImg drawInRect:CGRectMake(0,0,size.width,size.height) blendMode:kCGBlendModeNormal alpha:0.42];
                 CGImageRelease(crop2);
             }
             CGContextRestoreGState(c);

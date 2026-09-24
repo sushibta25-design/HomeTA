@@ -1,4 +1,6 @@
-# HomeTA 0.9.4 -- second wallpaper welded directly onto the real stock layer
+# HomeTA 0.9.5 -- dock tint wash increased from 22% to 42%
+
+0.9.5: dock inner tint alpha raised from 0.22 to 0.42 per request, for a more faded/washed look closer to the lighter reference photo. Nothing else changed.
 
 0.9.4: a photo grabbed mid-transition showed three colors braided together at the screen edges -- the app's own color, our fake wallpaper, and a third, more saturated red/magenta/blue that matches neither -- confirming a real stock layer still exists underneath and surfaces very briefly during the open/close animation, faster than the earlier frame-by-frame video check could catch.
 
