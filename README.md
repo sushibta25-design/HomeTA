@@ -1,4 +1,6 @@
-# HomeTA 0.6.0 — window-level wallpaper (no more old-iOS corners during app open/close)
+# HomeTA 0.6.1 — fixes 0.6.0 build error (missing HTTree helper)
+
+0.6.1: 0.6.0 failed to build (HTTree undeclared) because the tree-dump helper was accidentally deleted while removing the old wallpaper-search code, but the new dock diagnostic still called it. Re-added HTTree; no other logic changed from 0.6.0.
 
 Target: rootless (Dopamine), iOS 15-16.x, process com.apple.CarPlayApp. Supersedes 0.5.3, which tried to find and paint over the stock wallpaper VIEW (search failed on this device -- "WALL miss" in the log -- so the old red/blue iOS wallpaper still showed at the screen corners and around the app card while it zoomed open/closed). 0.6.0 instead paints one CALayer sized to the FULL WINDOW that hosts Home, inserted at the very bottom of that window's layer stack ("WALL painted ..." in the log). That window never changes during the open/close animation, so the new wallpaper now stays under everything at every corner, in every state. Removed the old in-Home wallpaper view entirely (was view-only, only covered Home's own bounds, not the full screen -- that partial coverage was the root cause).
 

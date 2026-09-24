@@ -1,4 +1,4 @@
-// HomeTA 0.6.0 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.6.1 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.6.0"
+#define HT_VERSION @"0.6.1"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -341,6 +341,16 @@ static void HTUpdateWindowWallpaper(void) {
 // To round the dock rail's outer corners like iOS 27 without repeating the earlier touch
 // regression, we first need the exact backdrop view inside DBStatusBarHostWindow. This logs its
 // subview tree once so the corner radius can be targeted precisely in the next build.
+static NSString *HTTree(UIView *v, NSUInteger depth) {
+    NSMutableString *out=[NSMutableString stringWithString:NSStringFromClass(v.class)];
+    if (depth && v.subviews.count) {
+        [out appendString:@"{"];
+        NSUInteger i=0;
+        for (UIView *sub in v.subviews) { if (i++) [out appendString:@","]; if (i>6) { [out appendString:@"…"]; break; } [out appendString:HTTree(sub,depth-1)]; }
+        [out appendString:@"}"];
+    }
+    return out;
+}
 static BOOL HTDockTreeLogged=NO;
 static void HTLogDockTreeOnce(UIWindowScene *scene) {
     if (HTDockTreeLogged) return;
