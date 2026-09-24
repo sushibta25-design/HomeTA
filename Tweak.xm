@@ -1,4 +1,4 @@
-// HomeTA 0.7.1 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.7.2 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.7.1"
+#define HT_VERSION @"0.7.2"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -381,6 +381,7 @@ static void HTLogDockTreeOnce(UIWindowScene *scene) {
 static char HTDockMaskKey;
 static CGRect HTDockMaskRect;
 static BOOL HTDockMaskDark;
+static void *HTDockMaskWallSrc; // last wallpaper CGImage this mask was patched from (identity check only, never dereferenced)
 
 static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BOOL dark) {
     if (!host || CGRectIsEmpty(dock)) return;
@@ -396,26 +397,41 @@ static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BO
         created=YES;
     }
     if (mask.superlayer!=host.layer) { [mask removeFromSuperlayer]; [host.layer addSublayer:mask]; }
+    // Pull the exact bitmap already painted for the real Home wallpaper (same window bounds as the
+    // dock host per the logs), so the two corner patches match it pixel-for-pixel instead of a
+    // guessed flat color.
+    CALayer *wallLayer = HTSource ? objc_getAssociatedObject(HTSource,&HTWallLayerKey) : nil;
+    CGImageRef wallImage = (__bridge CGImageRef)wallLayer.contents;
+    void *wallSrcId = (__bridge void*)wallLayer.contents;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     mask.frame=dock;
-    if (created || !CGRectEqualToRect(dock,HTDockMaskRect) || dark!=HTDockMaskDark || !mask.contents) {
-        HTDockMaskRect=dock; HTDockMaskDark=dark;
+    if (created || !CGRectEqualToRect(dock,HTDockMaskRect) || dark!=HTDockMaskDark || wallSrcId!=HTDockMaskWallSrc || !mask.contents) {
+        HTDockMaskRect=dock; HTDockMaskDark=dark; HTDockMaskWallSrc=wallSrcId;
         CGFloat scale=MAX(1,host.screen.scale ?: 2);
         CGSize size=dock.size;
-        // An inset "floating card" (gap on every side) cropped real content that sits close to the
-        // edge -- the clock's own top digit, in testing. There is no safe inset amount, because we
-        // don't know where the remote-rendered content draws each frame. So this only rounds the
-        // two OUTER corners (top and bottom, on the screen-edge side) at the dock's OWN existing
-        // edge -- no shrinking, no cropping of anything drawn away from those literal corner pixels.
         UIRectCorner corners = onLeft ? (UIRectCornerTopLeft|UIRectCornerBottomLeft)
                                        : (UIRectCornerTopRight|UIRectCornerBottomRight);
         CGFloat radius=MIN(14,MIN(size.width,size.height)/2);
-        UIColor *cornerColor = dark ? [UIColor colorWithRed:0.024 green:0.039 blue:0.125 alpha:1]
-                                     : [UIColor colorWithRed:0.918 green:0.941 blue:1.0 alpha:1];
         UIGraphicsBeginImageContextWithOptions(size,NO,scale);
         CGContextRef c=UIGraphicsGetCurrentContext();
-        [cornerColor setFill];
-        UIRectFill(CGRectMake(0,0,size.width,size.height));
+        if (wallImage && CGImageGetWidth(wallImage)>0 && host.bounds.size.width>0) {
+            // CG image origin is bottom-left, UIKit is top-left -- flip the crop rect's Y.
+            CGFloat imgScale=(CGFloat)CGImageGetWidth(wallImage)/host.bounds.size.width;
+            CGRect cropPx=CGRectMake(dock.origin.x*imgScale,
+                                      (host.bounds.size.height-CGRectGetMaxY(dock))*imgScale,
+                                      dock.size.width*imgScale,dock.size.height*imgScale);
+            CGImageRef crop=CGImageCreateWithImageInRect(wallImage,cropPx);
+            if (crop) {
+                UIImage *cropImg=[UIImage imageWithCGImage:crop scale:scale orientation:UIImageOrientationUp];
+                [cropImg drawInRect:CGRectMake(0,0,size.width,size.height)];
+                CGImageRelease(crop);
+            }
+        } else {
+            UIColor *cornerColor = dark ? [UIColor colorWithRed:0.024 green:0.039 blue:0.125 alpha:1]
+                                         : [UIColor colorWithRed:0.918 green:0.941 blue:1.0 alpha:1];
+            [cornerColor setFill];
+            UIRectFill(CGRectMake(0,0,size.width,size.height));
+        }
         CGContextSetBlendMode(c,kCGBlendModeClear);
         [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0,0,size.width,size.height)
                                 byRoundingCorners:corners
@@ -424,8 +440,8 @@ static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BO
         UIGraphicsEndImageContext();
         mask.contentsScale=scale;
         mask.contents=(__bridge id)image.CGImage;
-        HTLog([NSString stringWithFormat:@"DOCKMASK frame=%@ corners=outer radius=%.0f onLeft=%d dark=%d created=%d",
-            NSStringFromCGRect(dock),radius,onLeft,dark,created]);
+        HTLog([NSString stringWithFormat:@"DOCKMASK frame=%@ radius=%.0f onLeft=%d dark=%d patchedFromWallpaper=%d created=%d",
+            NSStringFromCGRect(dock),radius,onLeft,dark,wallImage!=NULL,created]);
     }
     [CATransaction commit];
 }
