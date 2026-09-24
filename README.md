@@ -1,5 +1,8 @@
-# HomeTA 0.9.1 -- wallpaper CONFIRMED WORKING (home-view insertion); attach earlier to reduce transition flash
+# HomeTA 0.9.2 -- fixes 0.9.1 build error + light inset dock rounding (2pt, wallpaper-accurate)
 
+0.9.2: fixed a Logos build error in the DBAnimationView hook (self.bounds/.window needs an explicit UIView cast when the class is only forward-declared -- unrelated to any of the wallpaper logic, which is unchanged from 0.9.1).
+
+Also retried the floating-card dock inset, at 2pt instead of 0.7.4's 6pt -- the earlier cropped clock digit was a real clipping problem (the margin covered part of the glyph), not a color mismatch, so this could still clip at 2pt; it's untested. The margin itself is now cropped from the real rendered wallpaper (not a flat-color guess) either way. Check closely whether the clock's leading digit is intact this time.
 0.9.1: 0.9.0 is confirmed working (photo + HOMEWALL log line) -- inserting the wallpaper as a real UIView directly into DBAnimationView (Home's own content view) is what renders on this unit. The window-level insertion (level -2/-1, since 0.6.0) still doesn't render here; that part of the earlier 'render limitation' theory was simply wrong about WHERE, not about everything -- the dock's own window (battery, dock mask) was never affected and still works exactly as before.
 
 For the corner-flash during app open/close: DBAnimationView is likely a freshly-created instance each time you return to Home, and the wallpaper previously only got (re)attached once a child icon's own layoutSubviews fired -- a small window where the new page has no wallpaper yet, plausibly exactly when the zoom animation runs. 0.9.1 hooks DBAnimationView itself and attaches the wallpaper the instant IT lays out, without waiting on a child icon, narrowing that gap.

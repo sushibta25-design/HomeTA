@@ -1,4 +1,4 @@
-// HomeTA 0.9.1 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.9.2 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.9.1"
+#define HT_VERSION @"0.9.2"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -415,9 +415,15 @@ static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BO
         HTDockMaskRect=dock; HTDockMaskDark=dark;
         CGFloat scale=MAX(1,host.screen.scale ?: 2);
         CGSize size=dock.size;
-        UIRectCorner corners = onLeft ? (UIRectCornerTopLeft|UIRectCornerBottomLeft)
-                                       : (UIRectCornerTopRight|UIRectCornerBottomRight);
-        CGFloat radius=MIN(14,MIN(size.width,size.height)/2);
+        // Light inset this time -- 2pt on top/bottom/outer side, 0 on the inner (content) side --
+        // instead of the earlier 6pt, which was wide enough to cover part of the clock digit. The
+        // margin itself is now cropped straight from the real wallpaper (not a flat-color guess),
+        // so it should blend in even at this small size instead of reading as a mismatched box.
+        CGFloat topGap=2, bottomGap=2, outerGap=2, innerGap=0;
+        CGRect inner = onLeft
+            ? CGRectMake(outerGap,topGap,size.width-outerGap-innerGap,size.height-topGap-bottomGap)
+            : CGRectMake(innerGap,topGap,size.width-outerGap-innerGap,size.height-topGap-bottomGap);
+        CGFloat radius=MIN(10,MIN(inner.size.width,inner.size.height)/2);
         UIGraphicsBeginImageContextWithOptions(size,NO,scale);
         CGContextRef c=UIGraphicsGetCurrentContext();
         if (wallImage && CGImageGetWidth(wallImage)>0 && host.bounds.size.width>0) {
@@ -437,15 +443,13 @@ static void HTUpdateDockRoundedMask(UIWindow *host, CGRect dock, BOOL onLeft, BO
             UIRectFill(CGRectMake(0,0,size.width,size.height));
         }
         CGContextSetBlendMode(c,kCGBlendModeClear);
-        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0,0,size.width,size.height)
-                                byRoundingCorners:corners
-                                      cornerRadii:CGSizeMake(radius,radius)] fill];
+        [[UIBezierPath bezierPathWithRoundedRect:inner cornerRadius:radius] fill];
         UIImage *image=UIGraphicsGetImageFromCurrentImageContext();
         UIGraphicsEndImageContext();
         mask.contentsScale=scale;
         mask.contents=(__bridge id)image.CGImage;
-        HTLog([NSString stringWithFormat:@"DOCKMASK frame=%@ radius=%.0f onLeft=%d dark=%d patchedFromWallpaper=%d created=%d",
-            NSStringFromCGRect(dock),radius,onLeft,dark,wallImage!=NULL,created]);
+        HTLog([NSString stringWithFormat:@"DOCKMASK frame=%@ inner=%@ radius=%.0f onLeft=%d dark=%d patchedFromWallpaper=%d created=%d",
+            NSStringFromCGRect(dock),NSStringFromCGRect(inner),radius,onLeft,dark,wallImage!=NULL,created]);
     }
     [CATransaction commit];
 }
@@ -639,7 +643,8 @@ static void HTApplyGlass(UIView *iconView) {
 // the corners during the app open/close animation.
 - (void)layoutSubviews {
     %orig;
-    if (self.bounds.size.width>=self.window.bounds.size.width*0.5) HTAttachHomeWallpaper(self);
+    UIView *self_=(UIView *)self;
+    if (self_.bounds.size.width>=self_.window.bounds.size.width*0.5) HTAttachHomeWallpaper(self_);
 }
 %end
 
