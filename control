@@ -1,6 +1,6 @@
 Package: com.sushibta.hometa
 Name: HomeTA
-Version: 0.8.1
+Version: 0.9.0
 Architecture: iphoneos-arm64
 Description: iOS 27-style CarPlay Home (Celosia-inspired wallpaper, glass icon rim, borderless dock battery) for rootless.
 Maintainer: sushibta25-design

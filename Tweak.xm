@@ -1,4 +1,4 @@
-// HomeTA 0.8.1 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.9.0 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.8.1"
+#define HT_VERSION @"0.9.0"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -532,6 +532,30 @@ static BOOL HTInsideDock(UIView *v) {
     }
     return NO;
 }
+static char HTHomeWallKey;
+static void HTAttachHomeWallpaper(UIView *home) {
+    if (!home) return;
+    HTWallpaper *wall=objc_getAssociatedObject(home,&HTHomeWallKey);
+    BOOL created=NO;
+    if (!wall) {
+        wall=[[HTWallpaper alloc] initWithFrame:home.bounds];
+        wall.userInteractionEnabled=NO;
+        wall.opaque=YES;
+        wall.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+        wall.contentMode=UIViewContentModeRedraw;
+        objc_setAssociatedObject(home,&HTHomeWallKey,wall,OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        created=YES;
+    }
+    if (wall.superview!=home || home.subviews.firstObject!=wall) {
+        [wall removeFromSuperview];
+        [home insertSubview:wall atIndex:0];
+    }
+    if (!CGRectEqualToRect(wall.frame,home.bounds)) wall.frame=home.bounds;
+    NSInteger style=home.window.traitCollection.userInterfaceStyle==UIUserInterfaceStyleLight ? 1 : 2;
+    if (wall.htStyle!=style) { wall.htStyle=style; [wall setNeedsDisplay]; }
+    if (created) HTLog([NSString stringWithFormat:@"HOMEWALL view attached home=%p bounds=%@",(void*)home,NSStringFromCGRect(home.bounds)]);
+}
+
 static void HTAttachHome(UIView *icon) {
     UIWindow *window=icon.window;
     if (!window) return;
@@ -546,6 +570,7 @@ static void HTAttachHome(UIView *icon) {
     if (!home) return;
     static BOOL attachLogged=NO;
     if (!attachLogged) { attachLogged=YES; HTLog([NSString stringWithFormat:@"HOME attached frame=%@ chain=%@",NSStringFromCGRect(home.bounds),HTChain(home)]); }
+    HTAttachHomeWallpaper(home);
     BOOL newSource=HTSource!=window || HTHome!=home;
     HTSource=window; HTHome=home;
     HTScheduleLayout();
