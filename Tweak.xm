@@ -1,4 +1,4 @@
-// HomeTA 0.9.0 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
+// HomeTA 0.9.1 — iOS 27-style CarPlay Home (Celosia-inspired wallpaper, Liquid Glass icon rim,
 // borderless battery) + dock touch hardening and one-shot dock hit-test diagnostics.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -10,7 +10,7 @@
 @property(nonatomic) BOOL allowsHitTesting; // private QuartzCore; guarded by respondsToSelector
 @end
 
-#define HT_VERSION @"0.9.0"
+#define HT_VERSION @"0.9.1"
 
 static void HTLog(NSString *message) {
     NSString *path=@"/var/mobile/HomeTA.log";
@@ -629,6 +629,17 @@ static void HTApplyGlass(UIView *iconView) {
     %orig;
     HTApplyGlass(self);
     HTAttachHome(self);
+}
+%end
+
+%hook DBAnimationView
+// Attach the wallpaper the instant this view itself appears/lays out, without waiting for a child
+// icon to also independently trigger layout -- narrows the gap where a freshly (re)created Home
+// page briefly has no wallpaper yet, which is the most likely cause of old wallpaper flashing at
+// the corners during the app open/close animation.
+- (void)layoutSubviews {
+    %orig;
+    if (self.bounds.size.width>=self.window.bounds.size.width*0.5) HTAttachHomeWallpaper(self);
 }
 %end
 
